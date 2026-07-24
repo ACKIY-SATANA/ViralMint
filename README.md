@@ -368,18 +368,16 @@ Stars are the single biggest thing that helps this project — they attract cont
 
 **[⭐ Star openclaw-easy/ViralMint](https://github.com/openclaw-easy/ViralMint)**
 
-<!-- Repo slug MUST be lowercase (openclaw-easy/viralmint) in these API URLs:
-     star-history 301-redirects the mixed-case form to lowercase, and
-     GitHub's camo image proxy doesn't follow redirects → permanently
-     broken chart. The href below is case-insensitive so it can keep the
-     display casing. -->
-<a href="https://www.star-history.com/#openclaw-easy/ViralMint&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=openclaw-easy/viralmint&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=openclaw-easy/viralmint&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=openclaw-easy/viralmint&type=Date" width="640" />
-  </picture>
-</a>
+<!-- Star-history is a LINK, not an embedded <img>, on purpose: GitHub
+     restricted the stargazers API on 2026-06-30 (star data is readable
+     only by a repo's own admins/collaborators), which broke star-history's
+     server-side rendering for public README embeds — the inline SVG now
+     returns "rate-limited / not available" for anonymous visitors. A link
+     always works and never shows a broken image. If star-history's
+     encrypted-token embed becomes viable again, this can go back to a
+     <picture> block — but NEVER embed a raw github_pat_ token in the URL
+     (it would be public + abused); only star-history's encrypted token. -->
+**[📈 See ViralMint's star history →](https://star-history.com/#openclaw-easy/ViralMint&Date)**
 
 <br/>
 
