@@ -368,11 +368,16 @@ Stars are the single biggest thing that helps this project — they attract cont
 
 **[⭐ Star openclaw-easy/ViralMint](https://github.com/openclaw-easy/ViralMint)**
 
+<!-- Repo slug MUST be lowercase (openclaw-easy/viralmint) in these API URLs:
+     star-history 301-redirects the mixed-case form to lowercase, and
+     GitHub's camo image proxy doesn't follow redirects → permanently
+     broken chart. The href below is case-insensitive so it can keep the
+     display casing. -->
 <a href="https://www.star-history.com/#openclaw-easy/ViralMint&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=openclaw-easy/ViralMint&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=openclaw-easy/ViralMint&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=openclaw-easy/ViralMint&type=Date" width="640" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=openclaw-easy/viralmint&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=openclaw-easy/viralmint&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=openclaw-easy/viralmint&type=Date" width="640" />
   </picture>
 </a>
 
