@@ -288,6 +288,22 @@ async def get_performance_summary(user_id: str = "local") -> dict:
     }
 
 
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday",
+             "friday", "saturday", "sunday")
+
+
+def _weekday_index(name: str) -> int:
+    """Sort key for day names — Monday first, anything unrecognised last.
+
+    Day keys come from `created_at.strftime("%A").lower()`, so a non-English
+    locale can yield a name that isn't in the tuple; that must sort, not raise.
+    """
+    try:
+        return _WEEKDAYS.index(name)
+    except ValueError:
+        return len(_WEEKDAYS)
+
+
 async def recommend_posting_time(
     user_id: str = "local",
     platform: str = "youtube",
@@ -382,6 +398,10 @@ async def recommend_posting_time(
     # Find best day
     best_day = None
     day_lift = 0
+    # Initialised unconditionally: the response below reads day_avgs, and a
+    # name that only exists inside the `if` is a NameError waiting for the next
+    # edit.
+    day_avgs: dict[str, float] = {}
     if day_performance:
         day_avgs = {d: sum(vs) / len(vs) for d, vs in day_performance.items()}
         best_day = max(day_avgs, key=day_avgs.get)
@@ -416,6 +436,12 @@ async def recommend_posting_time(
         "hour_lift_pct": round(hour_lift, 1),
         "day_lift_pct": round(day_lift, 1),
         "hour_breakdown": {str(h): round(avg, 1) for h, avg in sorted(hour_avgs.items())},
-        "day_breakdown": {d: round(avg, 1) for d, avg in sorted(day_performance.items(), key=lambda x: ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"].index(x[0]) if x[0] in ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"] else 7)} if day_performance else {},
+        # day_avgs, NOT day_performance: the latter maps day → LIST of view
+        # counts, and round() on a list raises TypeError — which took out this
+        # whole endpoint on its happy path (any user with upload history).
+        "day_breakdown": {
+            d: round(avg, 1)
+            for d, avg in sorted(day_avgs.items(), key=lambda kv: _weekday_index(kv[0]))
+        },
         "message": ". ".join(note_parts) + ".",
     }

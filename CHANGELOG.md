@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   validated (and regenerated if invalid) at startup.
 
 ### Fixed
+- **Best-posting-time recommendation no longer crashes.** As soon as you had
+  upload history the endpoint raised a `TypeError` — it rounded a list of view
+  counts instead of the per-day average it had already computed — so the whole
+  feature was unreachable on its success path.
 - **Subtitles tool no longer loses your job when you navigate away.** The
   Subtitles page tagged its job `tool:subtitles` while the backend creates
   `tool:subtitle_export`, so leaving the page mid-run and coming back showed the

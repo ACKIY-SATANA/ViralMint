@@ -223,15 +223,58 @@ def test_recommend_posting_time_metrics_but_no_early_velocity():
     _run(body)
 
 
-# NOTE: a test for the happy "produces a recommendation" path of
-# recommend_posting_time was intentionally DROPPED. It exposes a genuine OSS
-# bug (not an API mismatch): backend/services/performance_tracker.py line ~419
-# builds `day_breakdown` as `{d: round(avg, 1) for d, avg in
-# day_performance.items()}`, but day_performance's values are *lists* of view
-# counts, so `round([...], 1)` raises TypeError. Because any successful
-# recommendation path populates day_performance, the entire happy path crashes.
-# The fix belongs in source (use the already-computed `day_avgs`), which the
-# test-only mandate forbids touching — so the path is left uncovered here.
+def test_recommend_posting_time_happy_path_builds_breakdowns():
+    """The path that used to crash outright.
+
+    `day_breakdown` was built by rounding over `day_performance`, whose values
+    are LISTS of view counts — `round([...], 1)` raises TypeError. Any
+    successful recommendation populates day_performance, so this took out the
+    entire happy path; it now uses the pre-computed `day_avgs`.
+    """
+    async def body():
+        from backend.database import AsyncSessionLocal
+        from backend.models.video_metrics import VideoMetrics
+
+        # 3 youtube uploads with real early velocity, on two distinct weekdays
+        # so day_breakdown has more than one entry to sort.
+        async with AsyncSessionLocal() as db:
+            for i, (created, views) in enumerate([
+                (datetime(2026, 7, 20, 14, 0), 900),   # Monday
+                (datetime(2026, 7, 20, 14, 0), 1100),  # Monday
+                (datetime(2026, 7, 22, 9, 0), 300),    # Wednesday
+            ]):
+                gv = await _add_uploaded_video(
+                    db, created_at=created,
+                    uploaded_platforms_json=json.dumps(["youtube"]))
+                db.add(VideoMetrics(generated_video_id=gv.id, platform="youtube",
+                                    views=views, fetched_at=created + timedelta(hours=2)))
+            await db.commit()
+
+        rec = await pt.recommend_posting_time(_UID, platform="youtube")
+
+        assert rec["recommendation"] is not None
+        assert rec["sample_size"] == 3
+        # Monday averages 1000 vs Wednesday's 300 → Monday wins.
+        assert rec["recommendation"]["day"] == "monday"
+        assert rec["recommendation"]["hour_utc"] == 14
+
+        # Every breakdown value must be a rounded NUMBER, not a list.
+        day_bd = rec["day_breakdown"]
+        assert day_bd == {"monday": 1000.0, "wednesday": 300.0}
+        assert all(isinstance(v, (int, float)) for v in day_bd.values())
+        # ...and ordered Monday-first, not alphabetically or by insertion.
+        assert list(day_bd) == ["monday", "wednesday"]
+        assert all(isinstance(v, (int, float)) for v in rec["hour_breakdown"].values())
+
+    _run(body)
+
+
+def test_weekday_index_orders_monday_first_and_tolerates_unknown():
+    # Day keys come from strftime("%A").lower(), so a non-English locale can
+    # produce a name outside the tuple — it must sort last, not raise.
+    assert pt._weekday_index("monday") == 0
+    assert pt._weekday_index("sunday") == 6
+    assert pt._weekday_index("lundi") == 7
 
 
 # ── poll_all_uploaded_videos ──────────────────────────────────────────────────
