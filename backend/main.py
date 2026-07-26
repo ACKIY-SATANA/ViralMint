@@ -33,38 +33,34 @@ from backend.api import captions, channels, chat, chat_sessions, config as confi
 setup_logging(debug=settings.DEBUG)
 
 
-async def _watch_handoff_jobs(poll_seconds: int = 60):
+async def _watch_handoff_jobs(poll_seconds: int = 60, watch_ids=None):
     """Watch the running/pending jobs that survived the boot sweep because their
-    heartbeat was FRESH — they may belong to a PREDECESSOR backend still
-    draining through a restart handoff (init_db's sweep fails only STALE jobs;
-    see database.sweep_stale_jobs).
+    heartbeat was FRESH — they may belong to a PREDECESSOR backend still draining
+    through a restart handoff (init_db's sweep fails only STALE jobs; see
+    database.sweep_stale_jobs).
 
-    Each pass re-checks the SNAPSHOT taken at boot — never jobs this instance
-    created — and fails any that went stale (predecessor exited mid-job). Exits
-    once every watched job is terminal or swept.
+    The watch-set is the boot sweep's OWN output (database.BOOT_FRESH_JOB_IDS),
+    not a fresh "everything running" query. That distinction is load-bearing: by
+    the time this coroutine first runs, the server may already be serving, so a
+    re-query could adopt a job THIS instance just created — and a job with a long
+    silent step (Whisper on a big file can outlast the grace period without a
+    progress tick) would then be failed while perfectly alive, which is the exact
+    bug this machinery exists to prevent.
 
-    Replaces the old _cleanup_orphaned_jobs, which was dead code (init_db's
-    sweep always ran first and left it nothing to do) and, worse in spirit,
-    assumed any running job at boot was dead — the assumption that stamps a
-    still-completing generation "Server restarted — job did not complete".
+    Each pass re-checks that set and fails any job that went stale (predecessor
+    exited mid-job). Exits once every watched job is terminal or swept.
+
+    Replaces the old _cleanup_orphaned_jobs, which was dead code (init_db's sweep
+    always ran first and left it nothing to do) and, worse in spirit, assumed any
+    running job at boot was dead — the assumption that stamps a still-completing
+    generation "Server restarted — job did not complete".
     """
     import asyncio
     import logging
-    from sqlalchemy import select
-    from backend.database import AsyncSessionLocal, sweep_stale_jobs
-    from backend.models.job import Job
+    from backend.database import BOOT_FRESH_JOB_IDS, sweep_stale_jobs
     logger = logging.getLogger(__name__)
 
-    # Snapshot the fresh survivors ONCE at boot. Anything created later belongs
-    # to this instance and must never be a sweep candidate.
-    try:
-        async with AsyncSessionLocal() as db:
-            watched = list((await db.execute(
-                select(Job.id).where(Job.status.in_(["pending", "running"]))
-            )).scalars().all())
-    except Exception as e:
-        logger.warning("Handoff watcher: snapshot failed (%s)", e)
-        return
+    watched = list(BOOT_FRESH_JOB_IDS if watch_ids is None else watch_ids)
     if not watched:
         return
     logger.info("Handoff watcher: tracking %d possibly-draining job(s)", len(watched))

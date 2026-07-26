@@ -145,6 +145,36 @@ class TestSweep:
                 await _cleanup([jid])
         asyncio.run(run())
 
+    def test_sweeps_a_stale_row_whose_timestamp_uses_the_iso_t_separator(self):
+        """Staleness must not depend on SQLite's TEXT ordering of datetimes.
+
+        SQLite stores DATETIME as text, and '2026-07-26T13:47:04' sorts ABOVE
+        '2026-07-26 13:54:16' because 'T' > ' '. So an `updated_at < cutoff`
+        comparison in SQL silently skips any row not written with SQLAlchemy's
+        space separator. Caught live: a hand-written fixture row was judged fresh
+        despite a 10-minute-old heartbeat. The decision is made in Python now, so
+        the stored separator is irrelevant.
+        """
+        async def run():
+            from sqlalchemy import text as sql_text
+            jid = await _mk_running("iso_t")
+            try:
+                iso_t = (datetime.utcnow() - timedelta(seconds=600)).isoformat()
+                assert "T" in iso_t
+                async with AsyncSessionLocal() as db:
+                    await db.execute(
+                        sql_text("UPDATE jobs SET updated_at = :v WHERE id = :i"),
+                        {"v": iso_t, "i": jid})
+                    await db.commit()
+                swept, live = await sweep_stale_jobs(grace_seconds=180, only_ids=[jid])
+                assert swept == 1 and live == [], (
+                    "a stale row was skipped because of the timestamp separator"
+                )
+                assert (await _get(jid)).status == "failed"
+            finally:
+                await _cleanup([jid])
+        asyncio.run(run())
+
     def test_only_ids_scopes_the_sweep(self):
         # The handoff watcher must never touch jobs outside its boot snapshot
         # (i.e. jobs the CURRENT instance created).
@@ -191,19 +221,110 @@ class TestSweep:
                 await _cleanup([jid])
         asyncio.run(run())
 
+    def test_does_not_clobber_a_job_that_finished_mid_sweep(self):
+        """The write must be conditional, not a read-then-mutate.
+
+        A plain ORM mutation is a lost update: if a draining predecessor commits
+        "success" between the sweep's SELECT and its COMMIT, the sweep overwrites
+        it with "failed" and the drainer never writes again — reproducing the
+        failure-toast-for-a-completed-video bug in a narrower window. Simulated
+        by completing the job from another session at exactly that point.
+        """
+        async def run():
+            jid = await _mk_running("clobber")
+            await _backdate(jid, 600)
+            try:
+                import backend.database as DB
+                real_execute = None
+
+                # Complete the job right after the sweep reads it.
+                class _Hook:
+                    def __init__(self):
+                        self.fired = False
+
+                    async def maybe(self):
+                        if not self.fired:
+                            self.fired = True
+                            await update_job_status(jid, "success")
+
+                hook = _Hook()
+                orig = DB.AsyncSessionLocal
+
+                class _Session:
+                    def __init__(self):
+                        self._s = orig()
+
+                    async def __aenter__(self):
+                        self._db = await self._s.__aenter__()
+                        outer = self
+
+                        class _Proxy:
+                            async def execute(self, *a, **k):
+                                res = await outer._db.execute(*a, **k)
+                                # After the SELECT, race in a completion.
+                                if not hook.fired:
+                                    await hook.maybe()
+                                return res
+
+                            def __getattr__(self, n):
+                                return getattr(outer._db, n)
+
+                        return _Proxy()
+
+                    async def __aexit__(self, *a):
+                        return await self._s.__aexit__(*a)
+
+                DB.AsyncSessionLocal = _Session
+                try:
+                    swept, live = await DB.sweep_stale_jobs(
+                        grace_seconds=180, only_ids=[jid])
+                finally:
+                    DB.AsyncSessionLocal = orig
+
+                job = await _get(jid)
+                assert job.status == "success", (
+                    f"sweep clobbered a completed job (status={job.status!r}) — "
+                    "the UPDATE is not conditional"
+                )
+                assert swept == 0
+            finally:
+                await _cleanup([jid])
+        asyncio.run(run())
+
+    def test_raced_completion_is_reported_back_as_still_live(self):
+        """The raced row must come back in the still-live list, not vanish.
+
+        The watcher uses that list as its next watch-set; dropping a raced row
+        silently would stop tracking a job whose real state we did not establish.
+        A terminal row costs one cheap pass to discard.
+        """
+        async def run():
+            jid = await _mk_running("raced_live")
+            await _backdate(jid, 600)
+            try:
+                await update_job_status(jid, "success")   # drainer already landed
+                swept, live = await sweep_stale_jobs(grace_seconds=180, only_ids=[jid])
+                # Already terminal, so the SELECT does not even see it.
+                assert swept == 0 and live == []
+                assert (await _get(jid)).status == "success"
+            finally:
+                await _cleanup([jid])
+        asyncio.run(run())
+
 
 class TestHandoffWatcher:
+    """The watch-set is passed in (the boot sweep's own output), so these tests
+    scope precisely to their own job — no need to fail every other running row
+    in the dev DB just to get a clean field, which the earlier snapshot-based
+    version required."""
+
     def test_watcher_sweeps_job_when_heartbeat_goes_stale(self):
         async def run():
             from backend.main import _watch_handoff_jobs
-            # Clean field: the watcher snapshots ALL running/pending rows, so
-            # fail any leftovers first (the same outcome the pre-fix boot sweep
-            # gave them) — otherwise a stray row keeps the watcher alive past
-            # the wait_for timeout.
-            await sweep_stale_jobs(grace_seconds=0)
             jid = await _mk_running("watch")
             try:
-                task = asyncio.create_task(_watch_handoff_jobs(poll_seconds=0.05))
+                task = asyncio.create_task(
+                    _watch_handoff_jobs(poll_seconds=0.05, watch_ids=[jid]))
                 await asyncio.sleep(0.2)           # several passes; fresh → survives
                 assert (await _get(jid)).status == "running"
                 await _backdate(jid, 600)          # predecessor "died" — heartbeat frozen
@@ -216,14 +337,69 @@ class TestHandoffWatcher:
     def test_watcher_exits_when_job_completes(self):
         async def run():
             from backend.main import _watch_handoff_jobs
-            await sweep_stale_jobs(grace_seconds=0)
             jid = await _mk_running("watch_done")
             try:
-                task = asyncio.create_task(_watch_handoff_jobs(poll_seconds=0.05))
+                task = asyncio.create_task(
+                    _watch_handoff_jobs(poll_seconds=0.05, watch_ids=[jid]))
                 await asyncio.sleep(0.1)
                 await update_job_status(jid, "success")   # predecessor finished draining
                 await asyncio.wait_for(task, timeout=10)
                 assert (await _get(jid)).status == "success"
             finally:
+                await _cleanup([jid])
+        asyncio.run(run())
+
+    def test_watcher_never_touches_a_job_outside_its_boot_set(self):
+        """The regression the watch-set exists to prevent: a job created by THIS
+        instance after boot must never be a candidate, even if it goes silent for
+        longer than the grace period (a long Whisper step does exactly that)."""
+        async def run():
+            from backend.main import _watch_handoff_jobs
+            watched = await _mk_running("scoped_w")
+            mine = await _mk_running("scoped_mine")
+            try:
+                await _backdate(watched, 600)
+                await _backdate(mine, 600)   # silent far longer than the grace
+                task = asyncio.create_task(
+                    _watch_handoff_jobs(poll_seconds=0.05, watch_ids=[watched]))
+                await asyncio.wait_for(task, timeout=10)
+                assert (await _get(watched)).status == "failed"
+                assert (await _get(mine)).status == "running", (
+                    "watcher failed a job outside its boot set"
+                )
+            finally:
+                await _cleanup([watched, mine])
+        asyncio.run(run())
+
+    def test_watcher_defaults_to_the_boot_sweep_output(self):
+        """With no explicit set it reads database.BOOT_FRESH_JOB_IDS — the wiring
+        lifespan relies on."""
+        async def run():
+            import backend.database as DB
+            from backend.main import _watch_handoff_jobs
+            jid = await _mk_running("boot_default")
+            prev = list(DB.BOOT_FRESH_JOB_IDS)
+            try:
+                DB.BOOT_FRESH_JOB_IDS[:] = [jid]
+                await _backdate(jid, 600)
+                await asyncio.wait_for(
+                    _watch_handoff_jobs(poll_seconds=0.05), timeout=10)
+                assert (await _get(jid)).status == "failed"
+            finally:
+                DB.BOOT_FRESH_JOB_IDS[:] = prev
+                await _cleanup([jid])
+        asyncio.run(run())
+
+    def test_boot_sweep_records_fresh_ids_for_the_watcher(self):
+        async def run():
+            import backend.database as DB
+            jid = await _mk_running("boot_record")
+            prev = list(DB.BOOT_FRESH_JOB_IDS)
+            try:
+                await DB._cleanup_zombie_jobs()
+                assert jid in DB.BOOT_FRESH_JOB_IDS
+                assert (await _get(jid)).status == "running"
+            finally:
+                DB.BOOT_FRESH_JOB_IDS[:] = prev
                 await _cleanup([jid])
         asyncio.run(run())

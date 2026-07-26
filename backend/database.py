@@ -148,30 +148,56 @@ async def _warn_on_schema_drift():
 # for more than a couple of minutes.
 ZOMBIE_GRACE_SECONDS = 180
 
+# Job ids that were still non-terminal, with a FRESH heartbeat, when the boot
+# sweep ran. The lifespan handoff watcher (backend/main.py) watches exactly this
+# set. It deliberately does NOT re-query "everything running" later: by then this
+# instance may have created jobs of its own, and a job with a long silent step
+# (Whisper on a big file can exceed the grace period without a progress tick)
+# would be failed while it is perfectly alive — the very bug this machinery
+# exists to prevent. Mutated in place so `from … import` references stay valid.
+BOOT_FRESH_JOB_IDS: list[str] = []
+
 
 async def sweep_stale_jobs(grace_seconds: int = ZOMBIE_GRACE_SECONDS,
                            only_ids: list[str] | None = None) -> tuple[int, list[str]]:
     """Fail running/pending jobs whose heartbeat is STALE; leave fresh ones.
 
-    Returns ``(swept_count, fresh_nonterminal_ids)``. A NULL heartbeat (rows
-    written before the ``updated_at`` column existed) counts as stale — the
-    same outcome those rows always got.
+    Returns ``(swept_count, still_nonterminal_ids)``. A NULL heartbeat (rows
+    written before the ``updated_at`` column existed) counts as stale — the same
+    outcome those rows always got.
 
-    ``only_ids`` scopes a pass to a known watch-set (the lifespan handoff
-    watcher in backend/main.py) so jobs created by the CURRENT instance are
-    never sweep candidates.
+    ``only_ids`` scopes a pass to a known watch-set (the handoff watcher's boot
+    snapshot) so jobs created by the CURRENT instance are never candidates.
 
-    Mis-sweeps self-heal: update_job_status permits terminal→terminal writes,
-    so a draining predecessor's final "success" still lands over a "failed"
-    this sweep wrote. Never raises.
+    The write is a CONDITIONAL UPDATE, not a read-then-mutate. A plain ORM
+    mutation is a lost update: if a draining predecessor commits "success"
+    between our SELECT and our COMMIT, we would overwrite it with "failed" and it
+    would never write again — producing exactly the failure-toast-for-a-
+    completed-video bug in a narrower window.
+
+    The staleness DECISION is made in Python from the parsed timestamp; the SQL
+    guard is `status IN ('running','pending')` and nothing more. That is what
+    closes the harmful race — a predecessor that COMPLETES between our SELECT and
+    our UPDATE is no longer running/pending, so we match zero rows and leave its
+    result intact.
+
+    `updated_at` is deliberately absent from the WHERE. SQLite stores DATETIME as
+    TEXT, so any comparison there silently depends on the stored separator:
+    '2026-07-26T13:47:04' sorts ABOVE '2026-07-26 13:54:16' because 'T' > ' ',
+    which made a genuinely 10-minute-stale row look fresh (caught live). An
+    equality guard has the same flaw — SQLAlchemy re-binds the value with its own
+    separator and matches nothing. The residual cost is that a progress tick
+    landing inside the SELECT→UPDATE window (microseconds, on a job already
+    silent for the whole grace period) does not spare the job; status is the
+    guard that matters. Never raises.
     """
     from datetime import datetime, timedelta
 
-    swept, fresh = 0, []
+    swept, still_live = 0, []
     try:
         async with AsyncSessionLocal() as db:
             from backend.models.job import Job
-            from sqlalchemy import select
+            from sqlalchemy import select, update
             q = select(Job).where(Job.status.in_(["running", "pending"]))
             if only_ids is not None:
                 if not only_ids:
@@ -180,28 +206,44 @@ async def sweep_stale_jobs(grace_seconds: int = ZOMBIE_GRACE_SECONDS,
             rows = (await db.execute(q)).scalars().all()
             cutoff = datetime.utcnow() - timedelta(seconds=grace_seconds)
             for job in rows:
-                if job.updated_at is None or job.updated_at < cutoff:
-                    job.status = "failed"
-                    job.error_message = "Server restarted — job did not complete"
-                    job.completed_at = datetime.utcnow()
+                if not (job.updated_at is None or job.updated_at < cutoff):
+                    still_live.append(job.id)      # fresh heartbeat — leave alone
+                    continue
+                res = await db.execute(
+                    update(Job)
+                    .where(
+                        Job.id == job.id,
+                        Job.status.in_(["running", "pending"]),
+                    )
+                    .values(
+                        status="failed",
+                        error_message="Server restarted — job did not complete",
+                        completed_at=datetime.utcnow(),
+                    )
+                )
+                if res.rowcount:
                     swept += 1
                 else:
-                    fresh.append(job.id)
-            if swept:
-                await db.commit()
+                    # Raced: it went terminal since our SELECT (the drainer
+                    # finished). Its result stands. Report it back so a caller's
+                    # next pass drops it for free.
+                    still_live.append(job.id)
+            await db.commit()
     except Exception as e:
         logger.warning(f"Zombie job sweep failed: {e}")
-    return swept, fresh
+    return swept, still_live
 
 
 async def _cleanup_zombie_jobs():
     """Boot-time sweep: fail STALE running/pending jobs from a previous session.
 
-    Fresh ones are deliberately left alone for the lifespan handoff watcher
-    (backend/main.py) — they may belong to a predecessor instance that is still
-    draining, and the watcher sweeps them the moment they go stale.
+    Fresh ones are deliberately left alone and recorded in BOOT_FRESH_JOB_IDS for
+    the lifespan handoff watcher (backend/main.py) — they may belong to a
+    predecessor instance that is still draining, and the watcher sweeps them the
+    moment they go stale.
     """
     swept, fresh = await sweep_stale_jobs()
+    BOOT_FRESH_JOB_IDS[:] = fresh
     if swept:
         logger.warning(f"Marked {swept} zombie jobs as failed from previous session")
     if fresh:
