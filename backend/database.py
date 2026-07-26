@@ -66,26 +66,30 @@ async def init_db():
     )
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Read each table's columns ONCE and skip ALTERs for columns that
+        # already exist, instead of firing an ALTER-and-catch per column on
+        # every boot. _add_column_if_missing fills this lazily per table.
+        _cols: dict[str, set[str]] = {}
         # Idempotent column additions for SQLite (no Alembic)
-        await _add_column_if_missing(conn, "downloaded_videos", "transcript_segments_json", "TEXT")
+        await _add_column_if_missing(conn, "downloaded_videos", "transcript_segments_json", "TEXT", existing=_cols)
         # Job heartbeat (zombie-sweep staleness signal — see models/job.py)
-        await _add_column_if_missing(conn, "jobs", "updated_at", "DATETIME")
-        await _add_column_if_missing(conn, "generated_videos", "source_type", "VARCHAR(30)")
+        await _add_column_if_missing(conn, "jobs", "updated_at", "DATETIME", existing=_cols)
+        await _add_column_if_missing(conn, "generated_videos", "source_type", "VARCHAR(30)", existing=_cols)
         # Clip extraction fields
-        await _add_column_if_missing(conn, "generated_videos", "clip_start_seconds", "FLOAT")
-        await _add_column_if_missing(conn, "generated_videos", "clip_end_seconds", "FLOAT")
-        await _add_column_if_missing(conn, "generated_videos", "clip_virality_score", "FLOAT")
-        await _add_column_if_missing(conn, "generated_videos", "clip_hook_score", "FLOAT")
-        await _add_column_if_missing(conn, "generated_videos", "clip_hook_type", "VARCHAR(30)")
-        await _add_column_if_missing(conn, "generated_videos", "clip_virality_reason", "TEXT")
-        await _add_column_if_missing(conn, "generated_videos", "clip_score_breakdown_json", "TEXT")
-        await _add_column_if_missing(conn, "generated_videos", "caption_status", "VARCHAR(20)")
-        await _add_column_if_missing(conn, "generated_videos", "metadata_status", "VARCHAR(20)")
+        await _add_column_if_missing(conn, "generated_videos", "clip_start_seconds", "FLOAT", existing=_cols)
+        await _add_column_if_missing(conn, "generated_videos", "clip_end_seconds", "FLOAT", existing=_cols)
+        await _add_column_if_missing(conn, "generated_videos", "clip_virality_score", "FLOAT", existing=_cols)
+        await _add_column_if_missing(conn, "generated_videos", "clip_hook_score", "FLOAT", existing=_cols)
+        await _add_column_if_missing(conn, "generated_videos", "clip_hook_type", "VARCHAR(30)", existing=_cols)
+        await _add_column_if_missing(conn, "generated_videos", "clip_virality_reason", "TEXT", existing=_cols)
+        await _add_column_if_missing(conn, "generated_videos", "clip_score_breakdown_json", "TEXT", existing=_cols)
+        await _add_column_if_missing(conn, "generated_videos", "caption_status", "VARCHAR(20)", existing=_cols)
+        await _add_column_if_missing(conn, "generated_videos", "metadata_status", "VARCHAR(20)", existing=_cols)
         # BYOK: per-user encrypted keys (override .env at runtime)
-        await _add_column_if_missing(conn, "user_settings", "ai_provider", "VARCHAR(20)")
-        await _add_column_if_missing(conn, "user_settings", "ai_model", "VARCHAR(100)")
-        await _add_column_if_missing(conn, "user_settings", "ai_api_key_encrypted", "TEXT")
-        await _add_column_if_missing(conn, "user_settings", "youtube_api_key_encrypted", "TEXT")
+        await _add_column_if_missing(conn, "user_settings", "ai_provider", "VARCHAR(20)", existing=_cols)
+        await _add_column_if_missing(conn, "user_settings", "ai_model", "VARCHAR(100)", existing=_cols)
+        await _add_column_if_missing(conn, "user_settings", "ai_api_key_encrypted", "TEXT", existing=_cols)
+        await _add_column_if_missing(conn, "user_settings", "youtube_api_key_encrypted", "TEXT", existing=_cols)
 
     # Drift sentinel — compare every model's columns against the live DB
     # schema and log a loud warning for any column the model declares but
@@ -208,9 +212,39 @@ async def _cleanup_zombie_jobs():
         )
 
 
-async def _add_column_if_missing(conn, table: str, column: str, col_type: str):
-    """SQLite-safe column addition — no-op if already exists."""
+async def _table_columns(conn, table: str) -> set[str]:
+    """Column names currently on `table`; empty set if the table doesn't exist."""
+    try:
+        rows = await conn.exec_driver_sql(f"PRAGMA table_info({table})")
+        return {r[1] for r in rows.fetchall()}
+    except Exception:
+        return set()
+
+
+async def _add_column_if_missing(conn, table: str, column: str, col_type: str, *, existing=None):
+    """SQLite-safe column addition — no-op if the column already exists.
+
+    Every one of these used to fire an `ALTER TABLE … ADD COLUMN` on every boot
+    and swallow the "duplicate column" error — a throwaway failed statement per
+    column per startup once the DB is up to date, which is the normal case.
+
+    Pass `existing`, a ``{table: set(columns)}`` cache, and the ALTER is skipped
+    entirely for columns already present: one PRAGMA read per table, then zero
+    ALTERs on a current DB. The cache is filled lazily per table and updated
+    after a successful ALTER, so a later call for the same table sees a column
+    this one just added. Without `existing` the old try/except path is kept, so
+    the helper stays correct if called standalone.
+    """
+    if existing is not None:
+        cols = existing.get(table)
+        if cols is None:
+            cols = await _table_columns(conn, table)
+            existing[table] = cols
+        if column in cols:
+            return
     try:
         await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+        if existing is not None:
+            existing.setdefault(table, set()).add(column)
     except Exception:
         pass  # Column already exists — expected for idempotent migrations

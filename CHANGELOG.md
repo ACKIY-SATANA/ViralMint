@@ -19,6 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   used to slip through and crash every encrypt/decrypt at first use; it's now
   validated (and regenerated if invalid) at startup.
 
+### Changed
+- **Faster startup.** Every boot fired an `ALTER TABLE … ADD COLUMN` for each
+  migrated column and swallowed the resulting "duplicate column" error — a pile
+  of throwaway failed statements on an already-current database. Startup now
+  reads each table's columns once and skips those ALTERs entirely.
+
 ### Fixed
 - **Best-posting-time recommendation no longer crashes.** As soon as you had
   upload history the endpoint raised a `TypeError` — it rounded a list of view
