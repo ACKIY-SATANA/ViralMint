@@ -20,7 +20,6 @@ os.environ["VIRALMINT_DATA_DIR"] = str(_TMP)
 os.environ.setdefault("DEBUG", "false")
 
 import pytest
-from fastapi.routing import APIRoute
 from starlette.testclient import TestClient
 
 from backend.main import create_app
@@ -51,23 +50,39 @@ def client():
 
 
 def _get_routes(app):
+    """Parameter-free, hermetic GET paths, read from the OpenAPI schema.
+
+    Deliberately NOT by walking `app.routes` and picking out APIRoute instances.
+    That worked only while `include_router` flattened its children into the
+    parent's route list; FastAPI 0.140 leaves a wrapper object there instead and
+    keeps the real routes on `original_router` with the prefix in a separate
+    context, so the flat scan collapsed to ZERO routes. And that failed quietly
+    in the worst way: the count assertion below trips, but
+    `test_parameterless_get_routes_do_not_5xx` iterates an empty list and passes
+    VACUOUSLY — silently retiring the router coverage this module exists for.
+
+    `app.openapi()` is a stable public API that returns fully-prefixed paths, so
+    it survives that kind of internal reshuffle. Trade-off: routes marked
+    `include_in_schema=False` are invisible here; none of ours are.
+    """
     out = []
-    for r in app.routes:
-        if not isinstance(r, APIRoute):
+    for path, ops in (app.openapi().get("paths") or {}).items():
+        if "get" not in ops:
             continue
-        if "GET" not in r.methods:
+        if "{" in path:  # requires a path param — skip
             continue
-        if "{" in r.path:  # requires a path param — skip
+        if any(s in path for s in _SKIP_SUBSTRINGS):
             continue
-        if any(s in r.path for s in _SKIP_SUBSTRINGS):
-            continue
-        out.append(r.path)
+        out.append(path)
     return sorted(set(out))
 
 
 def test_app_builds_and_has_routes(client):
     routes = _get_routes(client.app)
-    assert len(routes) > 5
+    # A real floor, not >5: the old flat scan returned 0 under FastAPI 0.140 and
+    # would have satisfied any weak bound, leaving the 5xx sweep below iterating
+    # nothing. The app has dozens of parameter-free GETs.
+    assert len(routes) > 20, f"only found {len(routes)} routes: {routes}"
 
 
 def test_parameterless_get_routes_do_not_5xx(client):

@@ -34,6 +34,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Fixed
+- **TikTok channels show their full video list.** The My Channels grid capped
+  TikTok at 20 videos while the YouTube side fetched 200. Both are 200 now; the
+  TikTok scrape is a single request either way.
 - **Clip Studio: two videos no longer play at once.** Opening the source-video
   preview while a clip was playing left both running and both audible.
 - **Best-posting-time recommendation no longer crashes.** As soon as you had

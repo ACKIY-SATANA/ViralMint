@@ -557,10 +557,16 @@ def _fetch_via_ytdlp(channel_id: str, max_results: int) -> list:
 
 # ── TikTok (yt-dlp — public data, no API key needed) ─────────────────────────
 
-async def get_tiktok_channel(profile_url: str, max_videos: int = 20) -> dict:
+async def get_tiktok_channel(profile_url: str, max_videos: int = 200) -> dict:
     """
     Fetch TikTok profile + video list using yt-dlp.
     No API key or OAuth needed — reads public data.
+
+    Default cap matches get_youtube_channel's 200. It used to be 20, which
+    silently truncated the My Channels grid (the one caller that takes the
+    default) to a fifth of what the YouTube side shows. The TikTok yt-dlp scrape
+    pulls the profile list in ONE request with no native pagination, so a higher
+    cap is not meaningfully slower for the same channel.
     """
     cache_key = f"tt_{profile_url}_{max_videos}"
     cached = _cache_get(cache_key)
