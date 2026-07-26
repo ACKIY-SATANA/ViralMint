@@ -20,12 +20,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   validated (and regenerated if invalid) at startup.
 
 ### Changed
+- **Chat replies render smoothly.** Every streamed token wrote to the store and
+  re-parsed the whole partial reply, so long answers got progressively jankier.
+  Tokens are now batched to at most one update per frame — same output, a
+  fraction of the work.
+- **Background job polling backs off.** The jobs list was re-fetched every 5s
+  forever, including in hidden tabs. It now pauses while the tab is hidden,
+  slows to 30s when nothing is running, skips redundant re-renders when the
+  payload hasn't changed, and catches up immediately when you return to the tab.
 - **Faster startup.** Every boot fired an `ALTER TABLE … ADD COLUMN` for each
   migrated column and swallowed the resulting "duplicate column" error — a pile
   of throwaway failed statements on an already-current database. Startup now
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Fixed
+- **Clip Studio: two videos no longer play at once.** Opening the source-video
+  preview while a clip was playing left both running and both audible.
 - **Best-posting-time recommendation no longer crashes.** As soon as you had
   upload history the endpoint raised a `TypeError` — it rounded a list of view
   counts instead of the per-day average it had already computed — so the whole

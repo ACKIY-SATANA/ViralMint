@@ -865,6 +865,12 @@ export default function ClipStudio() {
   // Video player ref
   const videoRef = useRef(null)
 
+  // Pause the center clip player whenever the source-video preview opens, so
+  // two videos aren't playing — and both audible — at the same time.
+  useEffect(() => {
+    if (previewVideo) videoRef.current?.pause()
+  }, [previewVideo])
+
   // ── Load data ────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
     try {

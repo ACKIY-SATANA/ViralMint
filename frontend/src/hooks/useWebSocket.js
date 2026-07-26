@@ -1,4 +1,4 @@
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 import { ws } from "../api/websocket"
 import http from "../api/http"
 import useAppStore from "../store/appStore"
@@ -21,6 +21,15 @@ export default function useWebSocket() {
     failJob,
     removeJob,
   } = useAppStore()
+
+  // Chat tokens arrive far faster than the screen refreshes. Writing each one
+  // straight to the store cost a store notify + a markdown re-parse of the
+  // WHOLE partial response per token — quadratic over a long answer, and the
+  // main thread felt it. Buffer instead and flush at most once per frame; the
+  // rendered result is identical because appendStreamToken is a string concat.
+  const tokenBufRef = useRef("")
+  const rafRef = useRef(null)
+  const streamOpenRef = useRef(false)
 
   useEffect(() => {
     ws.connect()
@@ -53,13 +62,49 @@ export default function useWebSocket() {
     }
     restoreJobs()
 
+    // Drain the token buffer into the store. Safe to call at any time; a no-op
+    // when empty. MUST be called synchronously before any handler that reads
+    // streamingText (finalizeStream falls back to it when full_response is
+    // missing) or clears it (chat_error) — otherwise a frame's worth of
+    // buffered tokens is dropped, or a pending frame writes text back AFTER the
+    // clear.
+    const flushTokens = () => {
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+      const buf = tokenBufRef.current
+      if (!buf) return
+      tokenBufRef.current = ""
+      appendStreamToken(buf)
+    }
+
+    const endStream = () => {
+      flushTokens()
+      streamOpenRef.current = false
+    }
+
     const unsubs = [
       ws.on("chat_token", (msg) => {
-        setStreaming(true)
-        appendStreamToken(msg.token)
+        // Flip the composer lock once per turn, not once per token.
+        if (!streamOpenRef.current) {
+          streamOpenRef.current = true
+          setStreaming(true)
+        }
+        tokenBufRef.current += msg.token
+        if (rafRef.current == null) {
+          rafRef.current = requestAnimationFrame(() => {
+            rafRef.current = null
+            const buf = tokenBufRef.current
+            if (!buf) return
+            tokenBufRef.current = ""
+            appendStreamToken(buf)
+          })
+        }
       }),
 
       ws.on("chat_done", (msg) => {
+        endStream()  // land buffered tokens before finalizeStream reads them
         // quick_replies is an optional list emitted when the AI included a
         // <quick_replies> block. Bundling it onto chat_done keeps the chips
         // attached atomically to the message that just finished — no race
@@ -85,6 +130,7 @@ export default function useWebSocket() {
       }),
 
       ws.on("chat_error", (msg) => {
+        endStream()
         setStreaming(false)
         clearStreamingText()
         addMessage({ role: "system", content: `Error: ${msg.error}` })
@@ -258,6 +304,12 @@ export default function useWebSocket() {
 
     return () => {
       unsubs.forEach(fn => fn())
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+      tokenBufRef.current = ""
+      streamOpenRef.current = false
     }
   }, [])
 }
