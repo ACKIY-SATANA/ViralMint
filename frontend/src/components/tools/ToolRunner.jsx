@@ -14,6 +14,7 @@ import ChevronLeftIcon from "@mui/icons-material/ChevronLeft"
 import WarningAmberIcon from "@mui/icons-material/WarningAmber"
 import http from "../../api/http"
 import useAppStore from "../../store/appStore"
+import { toolJobTypeFor } from "./toolJobType"
 import PageHero from "../PageHero"
 import { GlassPanel, glassPanelSx } from "../../utils/glassFx"
 
@@ -169,16 +170,15 @@ export default function ToolRunner({
   // dropzone state — user sees their file is "gone" and there's no
   // progress bar on the page.
   //
-  // Derive the expected `tool:<snake>` job type from the endpoint URL
-  // (`/api/tools/auto-chapters` → `tool:auto_chapters` to match the
-  // backend's `create_job("tool:auto_chapters", ...)` call). If exactly
-  // one running job matches, re-attach. We deliberately don't restore
-  // completed/failed jobs — those auto-clear from the store after they
-  // reach terminal and the user has likely moved on.
+  // The job type the backend's `create_job(...)` really uses for this endpoint
+  // (see tools/toolJobType.js — mostly derived from the slug, with the few
+  // documented exceptions). If exactly one running job matches, re-attach. We
+  // deliberately don't restore completed/failed jobs — those auto-clear from
+  // the store after they reach terminal and the user has likely moved on.
   useEffect(() => {
     if (jobId || terminal) return
-    const slug = (endpoint || "").split("/").filter(Boolean).pop() || ""
-    const expectedJobType = "tool:" + slug.replaceAll("-", "_")
+    const expectedJobType = toolJobTypeFor(endpoint)
+    if (!expectedJobType) return
     const match = Object.values(activeJobs).find(
       (j) => j.jobType === expectedJobType && j.status === "running"
     )
@@ -256,13 +256,12 @@ export default function ToolRunner({
       // job_complete events, which updateJobProgress / completeJob no-op if
       // activeJobs[jobId] doesn't already exist.
       //
-      // Tag the entry with the specific `tool:<snake>` type the backend
-      // uses (e.g. `tool:auto_chapters`). This lets the page-mount re-attach
-      // hook above find a single running job per-tool when the user
-      // navigates away and comes back.
-      const slug = (endpoint || "").split("/").filter(Boolean).pop() || ""
-      const jobType = "tool:" + slug.replaceAll("-", "_")
-      startJob(data.job_id, jobType, "Starting...")
+      // Tag the entry with the specific job type the backend uses (e.g.
+      // `tool:auto_chapters`), from the same single source as the re-attach
+      // hook above — the two used to derive it independently, which is how
+      // /tools/subtitles ended up tagged `tool:subtitles` while the backend
+      // created `tool:subtitle_export`.
+      startJob(data.job_id, toolJobTypeFor(endpoint), "Starting...")
       setJobId(data.job_id)
     } catch (e) {
       const msg = e?.response?.data?.detail || e.message || "Upload failed"

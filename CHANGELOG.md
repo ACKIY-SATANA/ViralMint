@@ -20,6 +20,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   validated (and regenerated if invalid) at startup.
 
 ### Fixed
+- **Subtitles tool no longer loses your job when you navigate away.** The
+  Subtitles page tagged its job `tool:subtitles` while the backend creates
+  `tool:subtitle_export`, so leaving the page mid-run and coming back showed the
+  empty upload state as if the file had never been submitted. The endpoint →
+  job-type mapping now lives in one place, checked against the real backend
+  handlers by a test.
 - **Whisper quality setting is actually used.** Picking "accurate" or "best"
   loaded that model and then immediately threw it away and re-loaded "small",
   so analysis silently ran at the default quality while paying for two model
