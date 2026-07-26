@@ -20,6 +20,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   validated (and regenerated if invalid) at startup.
 
 ### Fixed
+- **Whisper quality setting is actually used.** Picking "accurate" or "best"
+  loaded that model and then immediately threw it away and re-loaded "small",
+  so analysis silently ran at the default quality while paying for two model
+  loads. Transcription quality is now passed explicitly at every call site.
+- **No more duplicate Whisper model downloads.** The "is this model already
+  downloaded?" check hardcoded `~/.cache/huggingface` and ignored `HF_HOME`, so
+  on any setup that relocates the cache an already-present model looked missing
+  and a second full copy (up to ~3 GB) was fetched.
+- **Heavy Whisper models no longer pin memory forever.** `medium`/`large-v3`
+  stayed resident for the life of the process — ~3 GB of RSS held by an app that
+  otherwise sits idle in the tray. They're now evicted after 10 minutes unused.
 - **Restart no longer fails a job that is still running.** A tray Restart (or
   any port takeover) booted a second backend whose startup sweep marked every
   in-flight job "Server restarted — job did not complete" — but uvicorn frees

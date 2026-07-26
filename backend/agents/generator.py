@@ -10,6 +10,7 @@ Script -> Voice -> Transcribe -> Stock video -> Music Mix -> Captions -> Final o
 - Background music mixing
 - Falls back to Ken Burns image zoom or text-on-background when Pexels is unavailable
 """
+import asyncio
 import hashlib
 import json
 import logging
@@ -487,8 +488,21 @@ class GeneratorAgent:
         render's captions). Fail-open: no script or non-CJK → unchanged."""
         try:
             from backend.services.whisper_service import whisper_service
-            whisper_service.load("fast")
-            result = await whisper_service.transcribe(voice_path, language=None)
+            # "fast" (base) is enough for caption timing on our own clean TTS
+            # output, and quality is passed EXPLICITLY: transcribe() used to
+            # re-resolve the model itself and default back to "balanced",
+            # throwing away this pre-load and paying for a second one.
+            # Loaded in a thread because a first-time load downloads the model.
+            #
+            # Deliberately NOT timing_only=True (greedy + VAD): the recognised
+            # text is only replaced by the real script when that script is
+            # CJK-dominant (see caption_service.align_script_to_segments), so
+            # for a Latin script the ASR text IS what gets burned in — a
+            # cheaper decode would degrade the visible captions, not just the
+            # discarded text.
+            await asyncio.to_thread(whisper_service.load, "fast")
+            result = await whisper_service.transcribe(
+                voice_path, language=None, quality="fast")
             segments = result.get("segments", [])
             if script:
                 from backend.services.caption_service import align_script_to_segments

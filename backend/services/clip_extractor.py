@@ -984,7 +984,8 @@ async def _load_or_transcribe_segments(video, user_settings, whisper_quality: st
 
     try:
         await asyncio.to_thread(whisper_service.load, whisper_quality)
-        transcript_data = await whisper_service.transcribe(audio_path)
+        transcript_data = await whisper_service.transcribe(
+            audio_path, quality=whisper_quality)
     except Exception as e:
         # Whisper crashed (corrupt audio, OOM, model load failure, etc.) — re-raise
         # so the job fails LOUDLY instead of silently downgrading to duration-based

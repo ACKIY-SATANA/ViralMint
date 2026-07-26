@@ -314,7 +314,8 @@ class AnalyzerAgent:
 
                     from backend.services.whisper_service import whisper_service
                     await asyncio.to_thread(whisper_service.load, whisper_quality)
-                    transcript_data = await whisper_service.transcribe(audio_path)
+                    transcript_data = await whisper_service.transcribe(
+                        audio_path, quality=whisper_quality)
                     transcript_source = "whisper"
 
                     # AI post-correction of Whisper transcript (chunked; never loses content)
@@ -586,7 +587,8 @@ class AnalyzerAgent:
             await asyncio.to_thread(whisper_service.load, whisper_quality)
             await ws_manager.send_progress(job_id, 15, "Transcribing audio...", user_id)
             await update_job_status(job_id, "running", progress_pct=15, current_step="Transcribing audio...")
-            transcript_data = await whisper_service.transcribe(audio_path)
+            transcript_data = await whisper_service.transcribe(
+                audio_path, quality=whisper_quality)
 
             await ws_manager.send_progress(job_id, 40, "Correcting transcript...", user_id)
 
