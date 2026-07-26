@@ -1112,6 +1112,33 @@ def dispatch(coro):
     asyncio.create_task(_run_with_limit(coro))
 
 
+# Strong references to long-lived fire-and-forget tasks. asyncio keeps only a
+# WEAK reference to tasks (`asyncio.all_tasks` is a WeakSet), so a bare
+# `asyncio.create_task(coro)` whose return value is discarded can be
+# garbage-collected mid-flight — silently killing the work with no completion
+# and no error. Anything that sleeps between passes is especially exposed.
+_background_tasks: set = set()
+
+
+def spawn_background(coro) -> asyncio.Task:
+    """Schedule *coro* as a fire-and-forget task, holding a STRONG reference to
+    it until it completes.
+
+    Use this instead of ``dispatch()`` for supervisory/long-lived coroutines:
+    ``dispatch`` runs its argument inside ``_task_semaphore`` (max 3), so a
+    long-lived watcher would permanently occupy a third of the heavy-task
+    capacity and starve real jobs. This helper is unlimited but is only for
+    cheap, mostly-sleeping work.
+
+    Precondition: a running event loop (same as ``asyncio.create_task``).
+    Returns the Task so callers can await/cancel it if they need to.
+    """
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
 async def run_batch_generate(
     job_id: str,
     items: list[dict],

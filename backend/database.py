@@ -68,6 +68,8 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
         # Idempotent column additions for SQLite (no Alembic)
         await _add_column_if_missing(conn, "downloaded_videos", "transcript_segments_json", "TEXT")
+        # Job heartbeat (zombie-sweep staleness signal — see models/job.py)
+        await _add_column_if_missing(conn, "jobs", "updated_at", "DATETIME")
         await _add_column_if_missing(conn, "generated_videos", "source_type", "VARCHAR(30)")
         # Clip extraction fields
         await _add_column_if_missing(conn, "generated_videos", "clip_start_seconds", "FLOAT")
@@ -131,22 +133,79 @@ async def _warn_on_schema_drift():
         logger.warning("Schema-drift sentinel failed (non-fatal): %s", e)
 
 
-async def _cleanup_zombie_jobs():
-    """Mark jobs stuck at running/pending as failed — they can't recover after restart."""
+# A running/pending job whose heartbeat is younger than this is treated as
+# ALIVE — possibly owned by a PREDECESSOR backend draining through a restart
+# handoff. uvicorn frees its listening socket at the START of graceful
+# shutdown and then keeps finishing background work, so a replacement instance
+# can boot while the old one is still running a job: "port free" never meant
+# "process gone". Progress ticks refresh the heartbeat every few seconds (see
+# ws_manager.send_progress), so 180s tolerates the occasional long silent step
+# (Whisper on a big file) without leaving genuinely dead jobs stuck "running"
+# for more than a couple of minutes.
+ZOMBIE_GRACE_SECONDS = 180
+
+
+async def sweep_stale_jobs(grace_seconds: int = ZOMBIE_GRACE_SECONDS,
+                           only_ids: list[str] | None = None) -> tuple[int, list[str]]:
+    """Fail running/pending jobs whose heartbeat is STALE; leave fresh ones.
+
+    Returns ``(swept_count, fresh_nonterminal_ids)``. A NULL heartbeat (rows
+    written before the ``updated_at`` column existed) counts as stale — the
+    same outcome those rows always got.
+
+    ``only_ids`` scopes a pass to a known watch-set (the lifespan handoff
+    watcher in backend/main.py) so jobs created by the CURRENT instance are
+    never sweep candidates.
+
+    Mis-sweeps self-heal: update_job_status permits terminal→terminal writes,
+    so a draining predecessor's final "success" still lands over a "failed"
+    this sweep wrote. Never raises.
+    """
+    from datetime import datetime, timedelta
+
+    swept, fresh = 0, []
     try:
         async with AsyncSessionLocal() as db:
             from backend.models.job import Job
-            from sqlalchemy import update
-            result = await db.execute(
-                update(Job)
-                .where(Job.status.in_(["running", "pending"]))
-                .values(status="failed", error_message="Server restarted — job did not complete")
-            )
-            if result.rowcount > 0:
-                logger.warning(f"Marked {result.rowcount} zombie jobs as failed from previous session")
-            await db.commit()
+            from sqlalchemy import select
+            q = select(Job).where(Job.status.in_(["running", "pending"]))
+            if only_ids is not None:
+                if not only_ids:
+                    return 0, []
+                q = q.where(Job.id.in_(only_ids))
+            rows = (await db.execute(q)).scalars().all()
+            cutoff = datetime.utcnow() - timedelta(seconds=grace_seconds)
+            for job in rows:
+                if job.updated_at is None or job.updated_at < cutoff:
+                    job.status = "failed"
+                    job.error_message = "Server restarted — job did not complete"
+                    job.completed_at = datetime.utcnow()
+                    swept += 1
+                else:
+                    fresh.append(job.id)
+            if swept:
+                await db.commit()
     except Exception as e:
-        logger.warning(f"Zombie job cleanup failed: {e}")
+        logger.warning(f"Zombie job sweep failed: {e}")
+    return swept, fresh
+
+
+async def _cleanup_zombie_jobs():
+    """Boot-time sweep: fail STALE running/pending jobs from a previous session.
+
+    Fresh ones are deliberately left alone for the lifespan handoff watcher
+    (backend/main.py) — they may belong to a predecessor instance that is still
+    draining, and the watcher sweeps them the moment they go stale.
+    """
+    swept, fresh = await sweep_stale_jobs()
+    if swept:
+        logger.warning(f"Marked {swept} zombie jobs as failed from previous session")
+    if fresh:
+        logger.info(
+            "Boot sweep: %d running/pending job(s) still have a fresh heartbeat "
+            "— possibly a draining predecessor; the handoff watcher will decide.",
+            len(fresh),
+        )
 
 
 async def _add_column_if_missing(conn, table: str, column: str, col_type: str):

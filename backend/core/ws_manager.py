@@ -72,6 +72,27 @@ class ConnectionManager:
             "percent": round(pct, 1),
             "step": step,
         }, user_id)
+        # Also persist to the jobs table. Two reasons:
+        #   1. A page refresh / WS reconnect mid-job reads the row, so without
+        #      this it shows the stale baseline step update_job_status wrote at
+        #      run() entry ("Loading source data...") for the whole job.
+        #   2. It refreshes Job.updated_at — the heartbeat the boot-time zombie
+        #      sweep uses to tell a live job from a dead one. The long
+        #      pipelines (generate, clip extraction) report progress ONLY
+        #      through here, so without the DB write their heartbeat would go
+        #      stale mid-run and a restart would fail a perfectly healthy job.
+        # Best-effort: the WS broadcast is the primary signal and a transient
+        # DB hiccup must never fail the calling task. Lazy import — ws_manager
+        # lives in core/, job_helper in agents/, so a module-level import
+        # would be circular.
+        try:
+            from backend.agents.job_helper import update_job_status
+            await update_job_status(job_id, "running", progress_pct=pct, current_step=step)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug(
+                "send_progress: DB persist skipped (job=%s): %s", job_id[:8], e,
+            )
 
     async def send_constraint_warning(
         self,

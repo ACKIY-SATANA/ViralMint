@@ -33,27 +33,50 @@ from backend.api import captions, channels, chat, chat_sessions, config as confi
 setup_logging(debug=settings.DEBUG)
 
 
-async def _cleanup_orphaned_jobs():
-    """Mark jobs stuck in pending/running as failed — they were lost on server restart."""
-    from datetime import datetime
-    from sqlalchemy import select, update
-    from backend.database import AsyncSessionLocal
-    from backend.models.job import Job
+async def _watch_handoff_jobs(poll_seconds: int = 60):
+    """Watch the running/pending jobs that survived the boot sweep because their
+    heartbeat was FRESH — they may belong to a PREDECESSOR backend still
+    draining through a restart handoff (init_db's sweep fails only STALE jobs;
+    see database.sweep_stale_jobs).
+
+    Each pass re-checks the SNAPSHOT taken at boot — never jobs this instance
+    created — and fails any that went stale (predecessor exited mid-job). Exits
+    once every watched job is terminal or swept.
+
+    Replaces the old _cleanup_orphaned_jobs, which was dead code (init_db's
+    sweep always ran first and left it nothing to do) and, worse in spirit,
+    assumed any running job at boot was dead — the assumption that stamps a
+    still-completing generation "Server restarted — job did not complete".
+    """
+    import asyncio
     import logging
+    from sqlalchemy import select
+    from backend.database import AsyncSessionLocal, sweep_stale_jobs
+    from backend.models.job import Job
     logger = logging.getLogger(__name__)
 
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(Job).where(Job.status.in_(["pending", "running"]))
-        )
-        orphans = result.scalars().all()
-        if orphans:
-            for job in orphans:
-                job.status = "failed"
-                job.error_message = "Server restarted while job was in progress"
-                job.completed_at = datetime.utcnow()
-            await db.commit()
-            logger.info(f"Cleaned up {len(orphans)} orphaned job(s)")
+    # Snapshot the fresh survivors ONCE at boot. Anything created later belongs
+    # to this instance and must never be a sweep candidate.
+    try:
+        async with AsyncSessionLocal() as db:
+            watched = list((await db.execute(
+                select(Job.id).where(Job.status.in_(["pending", "running"]))
+            )).scalars().all())
+    except Exception as e:
+        logger.warning("Handoff watcher: snapshot failed (%s)", e)
+        return
+    if not watched:
+        return
+    logger.info("Handoff watcher: tracking %d possibly-draining job(s)", len(watched))
+
+    while watched:
+        await asyncio.sleep(poll_seconds)
+        swept, watched = await sweep_stale_jobs(only_ids=watched)
+        if swept:
+            logger.warning(
+                "Handoff watcher: failed %d job(s) whose heartbeat went stale "
+                "(predecessor exited mid-job); %d still draining", swept, len(watched))
+    logger.info("Handoff watcher: done — all watched jobs terminal or swept")
 
 
 @asynccontextmanager
@@ -61,12 +84,15 @@ async def lifespan(app: FastAPI):
     """Startup + shutdown lifecycle."""
     await init_db()
 
-    # Mark orphaned jobs (pending/running from before restart) as failed
+    # Watch the running/pending jobs the boot sweep left alone (a fresh
+    # heartbeat means possibly a predecessor instance still draining them
+    # through a restart handoff). Background — must never block startup.
     try:
-        await _cleanup_orphaned_jobs()
+        from backend.core.task_runner import spawn_background
+        spawn_background(_watch_handoff_jobs())
     except Exception as e:
         import logging
-        logging.getLogger(__name__).warning(f"Orphaned job cleanup failed: {e}")
+        logging.getLogger(__name__).warning(f"Handoff job watcher failed to start: {e}")
 
     # Ensure SFX directory + generated files exist
     try:

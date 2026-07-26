@@ -264,16 +264,29 @@ def _terminate_process_tree(proc) -> None:
         pass
 
 
-def _terminate_port_holder(port=PORT):
-    """Best-effort: stop whoever owns the port (if not us).
+def _terminate_port_holder(port=PORT, wait_seconds=15):
+    """Best-effort: stop whoever owns the port (if not us), then wait for the
+    holder to actually EXIT — not merely to release the port.
+
+    uvicorn frees its listening socket at the START of graceful shutdown and
+    then keeps draining background jobs, so treating "port free" as "process
+    gone" lets a replacement backend boot alongside a predecessor that is still
+    finishing an in-flight generation. The new instance's zombie sweep would
+    then stamp the drainer's job "failed" while it goes on to succeed. This
+    bounded exit-wait removes most of that overlap; the backend's
+    staleness-aware sweep (database.sweep_stale_jobs) is the correctness net
+    for drains that outlast it.
 
     Windows note: os.kill(pid, SIGTERM) is really TerminateProcess (parent
     only) — use taskkill /T so an externally-started backend's child tree
     (ffmpeg/node/chromium) dies with it, same rationale as
-    _terminate_process_tree above.
+    _terminate_process_tree above. taskkill /F is a hard synchronous kill, so
+    the drain-wait below is POSIX-only — and os.kill(pid, 0) is NOT a liveness
+    probe on Windows, it terminates the process.
     """
     import signal
-    for pid in _find_port_pids(port):
+    pids = _find_port_pids(port)
+    for pid in pids:
         try:
             if platform.system() == "Windows":
                 subprocess.run(
@@ -284,6 +297,25 @@ def _terminate_port_holder(port=PORT):
                 os.kill(pid, signal.SIGTERM)
         except Exception:
             pass
+    if platform.system() == "Windows" or not pids:
+        return
+
+    def _alive(pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    deadline = time.time() + wait_seconds
+    remaining = [p for p in pids if _alive(p)]
+    while remaining and time.time() < deadline:
+        time.sleep(0.25)
+        remaining = [p for p in remaining if _alive(p)]
+    if remaining:
+        print(f"Port holder still draining after {wait_seconds}s "
+              f"(pids {remaining}) — proceeding; the backend's stale-job "
+              "sweep will reconcile.")
 
 
 def _copy_to_clipboard(text: str) -> bool:
@@ -330,11 +362,15 @@ def _running_job_count(timeout: float = 1.0) -> int:
         return 0
 
 
-def _confirm_quit_with_jobs(job_count: int) -> bool:
-    """Show a native confirm dialog before quitting with active jobs.
-    Returns True if the user wants to quit anyway. Fail-open: if every
+def _confirm_quit_with_jobs(job_count: int, action: str = "Quit") -> bool:
+    """Show a native confirm dialog before quitting/restarting with active jobs.
+    Returns True if the user wants to proceed anyway. Fail-open: if every
     dialog mechanism falls through, return True so the user isn't
     trapped unable to quit.
+
+    `action` ("Quit" / "Restart") only changes the copy — a restart kills a
+    running backend just as terminally as a quit does, so it needs the same
+    gate.
 
     Tries in order:
       1. tkinter messagebox (works wherever tk loaded)
@@ -342,18 +378,20 @@ def _confirm_quit_with_jobs(job_count: int) -> bool:
       3. Windows MessageBoxW via ctypes
       4. (no fallback for headless Linux — proceed silently)
     """
-    title = f"{APP_NAME} — Quit?"
+    gerund = {"Quit": "Quitting", "Restart": "Restarting"}.get(action, action + "ing")
+    title = f"{APP_NAME} — {action}?"
     plural = "s" if job_count != 1 else ""
     message = (
         f"{job_count} job{plural} still running. "
-        "Quitting now will cancel them mid-flight."
+        f"{gerund} now will cancel them mid-flight."
     )
+    anyway = f"{action} Anyway"
 
     # 1. tkinter — handles cross-platform when imported
     if "tkinter" in sys.modules:
         try:
             from tkinter import messagebox
-            return bool(messagebox.askokcancel(title, message + "\n\nQuit anyway?"))
+            return bool(messagebox.askokcancel(title, message + f"\n\n{action} anyway?"))
         except Exception:
             pass
 
@@ -364,11 +402,11 @@ def _confirm_quit_with_jobs(job_count: int) -> bool:
                 ["osascript", "-e",
                  f'display dialog "{message}" '
                  f'with title "{APP_NAME}" '
-                 f'buttons {{"Cancel", "Quit Anyway"}} '
+                 f'buttons {{"Cancel", "{anyway}"}} '
                  f'default button "Cancel" with icon caution'],
                 capture_output=True, text=True, timeout=30,
             )
-            return "Quit Anyway" in (result.stdout or "")
+            return anyway in (result.stdout or "")
         except Exception:
             return True
 
@@ -378,7 +416,7 @@ def _confirm_quit_with_jobs(job_count: int) -> bool:
             import ctypes
             # MB_OKCANCEL (1) + MB_ICONWARNING (0x30) = 0x31; OK return = 1
             ret = ctypes.windll.user32.MessageBoxW(
-                0, message + "\n\nQuit anyway?", title, 0x31,
+                0, message + f"\n\n{action} anyway?", title, 0x31,
             )
             return ret == 1
         except Exception:
@@ -1065,6 +1103,13 @@ def _do_restart():
 
 
 def _tray_restart(icon, item):
+    # Same running-jobs gate as quit: a restart terminates the backend just as
+    # finally, and a Restart clicked seconds after starting a generation is
+    # exactly how the handoff race gets hit. Fail-quiet count → a stopped
+    # backend never blocks the restart.
+    count = _running_job_count()
+    if count > 0 and not _confirm_quit_with_jobs(count, action="Restart"):
+        return
     if _gui_callback:
         _gui_callback("starting")
     threading.Thread(target=_do_restart, daemon=True, name="launcher-restart").start()

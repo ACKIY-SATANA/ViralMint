@@ -20,6 +20,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   validated (and regenerated if invalid) at startup.
 
 ### Fixed
+- **Restart no longer fails a job that is still running.** A tray Restart (or
+  any port takeover) booted a second backend whose startup sweep marked every
+  in-flight job "Server restarted — job did not complete" — but uvicorn frees
+  its port at the *start* of graceful shutdown, so the old process was often
+  still draining and went on to finish the job. You saw a failure toast for a
+  video that actually landed in the Library, and a retry redid all the work.
+  Jobs now carry a heartbeat (`jobs.updated_at`, refreshed by every progress
+  tick); the boot sweep fails only jobs whose heartbeat has gone stale, and a
+  background watcher re-checks the survivors until they finish or go stale. The
+  launcher also waits for the old process to actually exit, not just to release
+  the port. A late progress tick can no longer resurrect a finished job.
+- **Job progress survives a page refresh.** Progress steps were broadcast over
+  the WebSocket but never written to the jobs table, so reloading mid-job (or a
+  WebSocket reconnect) showed the stale "Loading source data..." baseline for
+  the rest of the run.
 - **Scout hardening ported from the hosted variant.** Fixes a timezone crash
   in virality scoring (tz-aware feed dates), makes outlier enrichment
   non-fatal with an `author_url` None-guard, shows every scouted result on a

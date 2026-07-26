@@ -104,8 +104,25 @@ async def update_job_status(
         job = result.scalar_one_or_none()
         if not job:
             return
+        # Terminal-state guard. A finalised job (success/failed/cancelled) must
+        # never be reverted to "running" by a late progress update — this
+        # matters now that ws_manager.send_progress also writes the DB, so a
+        # stray progress event arriving after termination would otherwise
+        # resurrect the row (and hand the zombie sweep a fresh heartbeat on a
+        # job nobody is running). Updates AMONG terminal states are still
+        # allowed, which is what lets a mis-swept job self-heal: a draining
+        # predecessor's final "success" still lands over the sweep's "failed".
+        if job.status in _TERMINAL and status not in _TERMINAL:
+            return
         prev_status = job.status
         job.status = status
+        # Heartbeat: touch on EVERY accepted update, even when no other column
+        # changes (a progress tick rejected by the regression guard just below
+        # would otherwise produce no UPDATE at all, and `onupdate` would not
+        # fire). The boot-time sweep uses this to tell a job that is alive in a
+        # draining predecessor instance from one that died with the old
+        # process — see database.sweep_stale_jobs.
+        job.updated_at = datetime.utcnow()
         if progress_pct is not None:
             # Prevent progress regression (e.g. 95% → 50%) unless explicitly restarting
             is_restart = status == "running" and progress_pct == 0

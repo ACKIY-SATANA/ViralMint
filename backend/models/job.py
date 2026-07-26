@@ -34,3 +34,13 @@ class Job(Base):
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    # Heartbeat for the boot-time zombie sweep. EVERY accepted
+    # update_job_status call touches this, and progress ticks route through it
+    # via ws_manager.send_progress — so a recent updated_at means the job is
+    # alive in SOME process, possibly a PREDECESSOR backend still draining an
+    # in-flight job through a restart handoff. The sweep therefore fails only
+    # STALE rows; a NULL heartbeat (rows written before this column existed —
+    # the migration adds it without backfill) counts as stale, preserving the
+    # old sweep-everything behaviour for old rows.
+    updated_at = Column(DateTime, nullable=True, default=datetime.utcnow,
+                        onupdate=datetime.utcnow)
