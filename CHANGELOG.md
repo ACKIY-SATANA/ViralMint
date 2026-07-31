@@ -34,6 +34,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Fixed
+- **The Library no longer returns a short (or empty) page after self-healing.**
+  The prune that removes rows whose file is gone ran inside the fetched page
+  and returned what was left, so a library with enough stale rows could answer
+  "no videos" next to a total of several hundred. It now re-queries after
+  committing the deletes, so you get a full page.
+- **Clip Studio asks the backend for clips.** It pulled an unfiltered page of
+  100 videos and filtered in the browser, so enough recent non-clip rows
+  rendered "No clips yet" over a library full of clips. `GET /api/videos` takes
+  a `source_type` filter now.
+- **A video's niche is a keyword again, not a paragraph.** The generator stored
+  the analyzer's `topic_angle` — prose by design — in the niche column. It now
+  resolves a real short niche (the source's own, else the scout query that
+  found it) or stores nothing.
 - **Transcription shows live progress instead of looking hung.** Whisper's
   segment generator was consumed in one gulp, so a 40-minute audio sat at a
   frozen 7% / 15% for the entire 15–30 minute transcription — indistinguishable

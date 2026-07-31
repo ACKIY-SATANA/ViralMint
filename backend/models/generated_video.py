@@ -5,6 +5,14 @@ from datetime import datetime
 from uuid import uuid4
 from backend.database import Base
 
+# Longest string accepted as a `niche`. A real niche is a search phrase
+# ("stoicism", "personal finance for gen z"), never a sentence. Shared by the
+# writer (agents/generator._resolve_row_niche) and any reader so the two can't
+# drift: the pipeline used to store the analyzer's prose `topic_angle` here,
+# producing 250-450 char "niches". The column is String(200) but SQLite does
+# not enforce VARCHAR length, so it failed silently.
+NICHE_MAX_CHARS = 100
+
 
 class GeneratedVideo(Base):
     __tablename__ = "generated_videos"

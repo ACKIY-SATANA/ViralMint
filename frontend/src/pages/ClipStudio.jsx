@@ -881,7 +881,10 @@ export default function ClipStudio() {
     try {
       const [srcRes, clipRes] = await Promise.all([
         http.get("/api/downloaded", { params: { limit: 200 } }),
-        http.get("/api/videos", { params: { limit: 100 } }),
+        // Filter server-side: an unfiltered page of 100 could be entirely
+        // recent non-clip rows, rendering "No clips yet" over a library full
+        // of clips.
+        http.get("/api/videos", { params: { limit: 100, source_type: "clip_extraction" } }),
       ])
       // Show all downloaded videos (sorted longest first — best for clipping)
       const downloadedVideos = (srcRes.data?.videos || srcRes.data || [])

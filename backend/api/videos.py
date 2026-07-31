@@ -20,43 +20,84 @@ router = APIRouter()
 @router.get("/videos")
 async def list_videos(
     status: str = Query(None),
+    source_type: str = Query(None),
     limit: int = Query(20, le=100),
     offset: int = Query(0),
     db: AsyncSession = Depends(get_db),
 ):
-    """List generated videos with optional status filter."""
-    query = select(GeneratedVideo).order_by(GeneratedVideo.created_at.desc())
+    """List generated videos with optional status / source_type filters.
+
+    `source_type` filters server-side (e.g. "clip_extraction" for Clip
+    Studio). Clip Studio used to pull an unfiltered page of 100 and filter in
+    the browser, so a library with enough recent non-clip rows rendered
+    "No clips yet" over a library full of clips.
+    """
+    base_query = select(GeneratedVideo).order_by(GeneratedVideo.created_at.desc())
     if status:
-        query = query.where(GeneratedVideo.status == status)
-    query = query.offset(offset).limit(limit)
+        base_query = base_query.where(GeneratedVideo.status == status)
+    if source_type:
+        base_query = base_query.where(GeneratedVideo.source_type == source_type)
 
-    result = await db.execute(query)
-    videos = result.scalars().all()
-
-    # Self-heal: prune rows whose rendered file is gone. Only rows that HAD a
-    # file (video_path set) but it's now missing on disk — a draft/failed row
-    # with no path yet is legitimately file-less and left alone. Local is_file()
-    # is authoritative so this is safe; it stops broken/dead tiles from
-    # lingering in the Library forever. Committed before the count below so
-    # `total` reflects the pruned set.
-    live = []
+    # Self-heal + BACKFILL: prune rows whose rendered file is gone, then
+    # re-query so the caller still gets a full page.
+    #
+    # Only rows that HAD a file (video_path set) but it's now missing on disk —
+    # a draft/failed row with no path yet is legitimately file-less and left
+    # alone. Local is_file() is authoritative so the delete is safe; it stops
+    # broken/dead tiles from lingering in the Library forever.
+    #
+    # Why the loop: pruning used to happen *within* the fetched page and the
+    # page was returned short. With enough stale rows the whole page could be
+    # pruned, so a limit-3 request answered `videos: []` next to `total: 431` —
+    # which reads as a bug to any caller and gives it no way forward. Deleting
+    # rows inside [offset, offset+limit) shifts later rows INTO that window, so
+    # re-running the same offset/limit query is the correct backfill.
+    live: list = []
     pruned = 0
-    for v in videos:
-        if v.video_path and not Path(v.video_path).is_file():
-            try:
-                for ps in (v.video_path, v.audio_path, v.thumbnail_path, v.video_path_landscape):
-                    if ps:
-                        pp = Path(ps)
-                        if pp.exists():
-                            pp.unlink(missing_ok=True)
-                await db.delete(v)
-                pruned += 1
-                continue
-            except Exception:
-                logger.warning("Could not prune orphaned video row %s", v.id)
-        live.append(v)
+    passes = 0
+    _MAX_PASSES = 5  # bounds the work when a whole tail of rows is orphaned
+    while True:
+        passes += 1
+        # Rows already kept occupy [offset, offset + len(live)) in the CURRENT
+        # (post-delete) ordering, because deletions were all inside the window
+        # and rows before `offset` are untouched. So the next slice starts
+        # after them — re-using the original `offset` on a later pass would
+        # re-fetch what `live` already holds and duplicate it in the response.
+        result = await db.execute(
+            base_query.offset(offset + len(live)).limit(limit - len(live)))
+        page = result.scalars().all()
+        if not page:
+            break
+        pruned_this_pass = 0
+        for v in page:
+            if v.video_path and not Path(v.video_path).is_file():
+                try:
+                    for ps in (v.video_path, v.audio_path,
+                               v.thumbnail_path, v.video_path_landscape):
+                        if ps:
+                            pp = Path(ps)
+                            if pp.exists():
+                                pp.unlink(missing_ok=True)
+                    await db.delete(v)
+                    pruned += 1
+                    pruned_this_pass += 1
+                    continue
+                except Exception:
+                    logger.warning("Could not prune orphaned video row %s", v.id)
+            live.append(v)
+        if pruned_this_pass:
+            # Commit so the next pass's OFFSET sees the shrunk table (and so
+            # `total` below reflects the pruned set).
+            await db.commit()
+        if len(live) >= limit or not pruned_this_pass:
+            break
+        if passes >= _MAX_PASSES:
+            logger.warning(
+                "Videos: stopped backfilling after %d passes (%d pruned, page "
+                "has %d/%d) — many orphaned rows in this range",
+                passes, pruned, len(live), limit)
+            break
     if pruned:
-        await db.commit()
         logger.info("Videos: pruned %d orphaned row(s) with missing files", pruned)
     videos = live
 
@@ -64,6 +105,8 @@ async def list_videos(
     count_query = select(func.count(GeneratedVideo.id))
     if status:
         count_query = count_query.where(GeneratedVideo.status == status)
+    if source_type:
+        count_query = count_query.where(GeneratedVideo.source_type == source_type)
     total = (await db.execute(count_query)).scalar()
 
     return {
