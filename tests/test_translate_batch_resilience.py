@@ -37,7 +37,8 @@ def _segments(n: int) -> list[dict]:
 
 
 class _AI:
-    """Fake AI client. `responder(texts) -> str` builds each raw reply."""
+    """Fake AI client. `responder(n)` (or `responder(n, prompt)`) builds each
+    raw reply; `n` is the batch size recovered from the prompt's contract."""
 
     def __init__(self, responder):
         self._responder = responder
@@ -46,9 +47,11 @@ class _AI:
     async def chat(self, messages, **kw):
         self.calls += 1
         prompt = messages[0]["content"]
-        # Recover the input size from the contract line in the prompt.
         n = int(prompt.split("MUST have exactly ")[1].split(" elements")[0])
-        return self._responder(n)
+        try:
+            return self._responder(n, prompt)
+        except TypeError:
+            return self._responder(n)
 
 
 def _run(ai, segments, monkeypatch, language="Chinese"):
@@ -101,26 +104,39 @@ def test_a_short_batch_is_split_not_fatal(monkeypatch):
 
 
 def test_a_hopeless_line_keeps_its_source_text(monkeypatch):
-    """Degrade one caption rather than slide every later one off its
-    timestamp."""
-    def responder(n):
-        if n == 1:
+    """Degrade ONE caption rather than slide every later one off its
+    timestamp. (All of them failing is an error — see the next test.)"""
+    def responder(n, prompt):
+        # "line 2" is poison: any batch containing it comes back malformed,
+        # so the split walks down to it and only it degrades.
+        if "line 2" in prompt:
             return "not json at all"
-        return json.dumps(["x"] * (n - 1))     # always one short
+        return json.dumps([f"zh{i}" for i in range(n)])
 
     ai = _AI(responder)
     out = _run(ai, _segments(4), monkeypatch)
     assert len(out) == 4
-    assert [s["text"] for s in out] == ["line 0", "line 1", "line 2", "line 3"]
-    assert all(s.get("untranslated") for s in out)
+    assert [s.get("untranslated", False) for s in out] == [False, False, True, False]
+    assert out[2]["text"] == "line 2"          # source text kept, timing intact
+    assert (out[2]["start"], out[2]["end"]) == (2.0, 3.0)
+
+
+def test_every_line_failing_is_an_error_not_a_silent_passthrough(monkeypatch):
+    """Handing back the source captions under a "translated" label would burn
+    a full render for nothing."""
+    ai = _AI(lambda n: "not json at all")
+    monkeypatch.setattr("backend.core.ai_provider.get_ai_client", lambda s: ai)
+    with pytest.raises(RuntimeError, match="never returned a usable result"):
+        asyncio.run(trun._translate_segments(_segments(3), "Chinese", object()))
 
 
 def test_the_split_does_not_fan_out_into_dozens_of_calls(monkeypatch):
     """attempts=1 on recursion. A 20-line batch that never succeeds costs the
     ~40 calls of a binary split, not the ~60+ of retrying at every level."""
     ai = _AI(lambda n: "garbage")
-    out = _run(ai, _segments(20), monkeypatch)
-    assert len(out) == 20
+    monkeypatch.setattr("backend.core.ai_provider.get_ai_client", lambda s: ai)
+    with pytest.raises(RuntimeError):          # nothing translated at all
+        asyncio.run(trun._translate_segments(_segments(20), "Chinese", object()))
     assert ai.calls <= 45, f"fan-out too wide: {ai.calls} calls"
 
 

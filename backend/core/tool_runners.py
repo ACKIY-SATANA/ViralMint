@@ -444,14 +444,19 @@ async def run_tool_remove_silence(job_id: str, in_path: Path, user_id: str = "lo
             keep.append((cursor, duration))
 
         if not silences or not keep:
-            await asyncio.to_thread(shutil.copy2, str(in_path), str(out_path))
+            # Returned UNCHANGED, so the output keeps the SOURCE's container —
+            # naming a copied .webm/.m4a ".mp4"/".mp3" would hand the browser
+            # a content-type the bytes don't match. `out_path` above is named
+            # for what the cut pass would ENCODE; nothing is encoded here.
+            noop_path = tool_out_path(job_id, in_path.suffix.lower() or out_path.suffix)
+            await asyncio.to_thread(shutil.copy2, str(in_path), str(noop_path))
             await ws_manager.send_constraint_warning(
                 constraint="silence_noop",
                 message="No removable silence detected — returned unchanged.",
                 severity="info",
                 user_id=user_id,
             )
-            await _tool_success(job_id, out_path, cleanup, user_id)
+            await _tool_success(job_id, noop_path, cleanup, user_id)
             logger.info("TASK DONE  tool:remove_silence (noop) | job=%s", job_id[:8])
             return
 
@@ -689,6 +694,17 @@ async def _translate_segments(segments: list[dict], target_language: str, user_s
 
     if not out:
         raise RuntimeError("Translation produced no segments")
+    # Degrading a few lines is the point of the split-and-retry; degrading
+    # EVERY line is not a translation. Shipping that would burn a full render
+    # to hand back the source captions under a "translated" label, so fail
+    # loudly instead. (A provider-level outage raises AIProviderError and
+    # never reaches here — this catches a model that answers, badly, every
+    # time.)
+    if all(s.get("untranslated") for s in out):
+        raise RuntimeError(
+            "Translation failed — the model never returned a usable result. "
+            "Try again, or pick a different target language."
+        )
     return out
 
 

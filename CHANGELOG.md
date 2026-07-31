@@ -49,6 +49,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   done-callback while the calling thread is still reading it, which aborts the
   whole backend process — no traceback, just a dead app. TikTok forces
   impersonation, so it was reachable from every TikTok probe and download.
+- **A translation that fails on every line is an error, not a silent
+  passthrough.** Degrading a few captions to their source text is the point of
+  the retry ladder; degrading all of them would burn a full render to hand back
+  the original captions under a "translated" label.
 - **Translating a long video no longer dies on one bad batch.** Translation
   sent every segment in a single AI call and enforced a strict 1:1 count by
   raising, so a long video overflowed the token budget and a model that merged
@@ -72,6 +76,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   built to apply them (and posting one came back 422). The accepted list is now
   derived from the engine, with a test pinning the API, both pickers and the
   Smart Video config list to it.
+- **Reframe's description matches what it does.** The page advertised
+  MediaPipe face-tracking with a center-crop fallback; the tool is a blur-fill
+  fit and this build ships no face detection at all.
 - **The Audio tools accept audio.** Enhance Audio and Silence Remover validated
   uploads against the video extensions only, so a podcast mp3 was rejected with
   a 400 *after* the upload — on the two tools whose whole job is the audio

@@ -437,6 +437,48 @@ class TestAudioEnhance:
         terminal_spies["success"].assert_awaited()
 
 
+# ── remove silence ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+class TestRemoveSilence:
+    async def test_audio_input_produces_mp3(self, terminal_spies, out_dir):
+        """A podcast is a first-class input: no video stream to re-encode."""
+        def _run(cmd, **kw):
+            if "silencedetect" in " ".join(cmd):
+                return MagicMock(returncode=0, stderr=(
+                    "silence_start: 1.0\nsilence_end: 2.0 | silence_duration: 1.0\n"))
+            (out_dir / "out.mp3").write_bytes(b"\x00" * 16)
+            return MagicMock(returncode=0, stderr="")
+
+        with patch("backend.services.clip_extractor._has_video_stream", return_value=False), \
+             patch("backend.services.video_utils.probe_duration", return_value=10.0), \
+             patch.object(trun, "subprocess") as sp:
+            sp.run.side_effect = _run
+            await trun.run_tool_remove_silence("j1", Path("/nonexistent/pod.mp3"))
+        cut_cmd = sp.run.call_args[0][0]
+        assert "libmp3lame" in cut_cmd
+        assert "[0:v]" not in " ".join(cut_cmd), "no video half of the filtergraph"
+        terminal_spies["success"].assert_awaited()
+
+    async def test_noop_copy_keeps_the_source_container(self, terminal_spies, out_dir):
+        """Nothing is encoded on the no-silence path, so renaming a copied
+        .m4a to .mp3 would hand the browser a content-type the bytes don't
+        match."""
+        src = out_dir / "pod.m4a"
+        src.write_bytes(b"\x00" * 16)
+
+        with patch("backend.services.clip_extractor._has_video_stream", return_value=False), \
+             patch("backend.services.video_utils.probe_duration", return_value=10.0), \
+             patch.object(trun, "subprocess") as sp:
+            sp.run.return_value = MagicMock(returncode=0, stderr="no silence here")
+            with patch("backend.core.ws_manager.ws_manager.send_constraint_warning",
+                       new=AsyncMock()):
+                await trun.run_tool_remove_silence("j1", src)
+        served = terminal_spies["success"].call_args[0][1]
+        assert served.suffix == ".m4a", f"served {served.name} for an .m4a source"
+        assert served.exists()
+
+
 # ── gif ─────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
