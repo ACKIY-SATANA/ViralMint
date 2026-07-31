@@ -34,6 +34,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Fixed
+- **Metadata and Auto Chapters show their result inline again.** Both previews
+  read a field the store never wrote, so both always fell through to "click
+  Download instead" — the copy-to-clipboard preview, which is the whole point
+  of a titles/tags/chapters tool, was unreachable code. They now read the job's
+  own output, which also means the preview survives a page reload.
+- **The Captions tool offers every caption style.** The renderer has ten; the
+  endpoint validated three and the picker listed three, so neon, karaoke, glow,
+  Bold Urban, Warm Glow, Monochrome and Minimal were unreachable from the tool
+  built to apply them (and posting one came back 422). The accepted list is now
+  derived from the engine, with a test pinning the API, both pickers and the
+  Smart Video config list to it.
 - **The Audio tools accept audio.** Enhance Audio and Silence Remover validated
   uploads against the video extensions only, so a podcast mp3 was rejected with
   a 400 *after* the upload — on the two tools whose whole job is the audio

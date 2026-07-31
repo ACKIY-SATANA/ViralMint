@@ -27,6 +27,7 @@ from sqlalchemy import select
 from backend.config import settings as app_settings
 from backend.database import AsyncSessionLocal
 from backend.models.job import Job
+from backend.services.caption_service import CAPTION_STYLES as _CAPTION_STYLE_DEFS
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tools", tags=["tools"])
@@ -49,6 +50,16 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
 # had been sent — on the tools whose whole job is the audio track.
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 MEDIA_EXTS = VIDEO_EXTS | AUDIO_EXTS
+
+# Caption styles this API accepts — DERIVED from the caption engine so the
+# surfaces can't drift again. `brainrot` is excluded: it is a look applied by
+# its own pipeline, not a general caption preset.
+#
+# This was hardcoded to ("viral", "classic", "bold") long after the engine grew
+# to eleven, so the Captions tool offered three of them and posting any of the
+# other seven came back 422.
+_CAPTION_STYLE_IDS = tuple(k for k in _CAPTION_STYLE_DEFS if k != "brainrot")
+CaptionStyleId = Literal[_CAPTION_STYLE_IDS]
 
 
 async def save_upload(
@@ -182,7 +193,7 @@ async def download_tool_result(job_id: str):
 @router.post("/captions")
 async def captions_tool(
     file: UploadFile = File(...),
-    style: Literal["viral", "classic", "bold"] = Form("viral"),
+    style: CaptionStyleId = Form("viral"),
     emoji_style: Literal["none", "minimal", "moderate", "heavy"] = Form("moderate"),
 ):
     from backend.agents.job_helper import create_job

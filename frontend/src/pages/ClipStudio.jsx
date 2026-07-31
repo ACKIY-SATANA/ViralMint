@@ -33,6 +33,7 @@ import AutoAwesomeIcon from "@mui/icons-material/AutoAwesomeOutlined"
 import http from "../api/http"
 import useAppStore from "../store/appStore"
 import ActiveJobsBanner from "../components/create/ActiveJobsBanner"
+import { CAPTION_STYLES } from "../components/tools/captionOptions"
 
 /* ── Helpers ───────────────────────────────────────────────── */
 
@@ -366,7 +367,9 @@ const WHISPER_QUALITIES = [
 
 // Caption styles the OSS pipeline can render. emoji_style vocab matches the
 // backend's _EMOJI_STYLES set (none|minimal|moderate|heavy, default moderate).
-const CAPTION_STYLE_OPTIONS = ["viral", "classic", "bold", "none"]
+// Every engine style plus the "none" sentinel — the picker used to list
+// three of the ten the renderer supports.
+const CAPTION_STYLE_OPTIONS = [...CAPTION_STYLES.map(s => s.value), "none"]
 const EMOJI_STYLE_OPTIONS = [
   { v: "none", label: "Off" },
   { v: "minimal", label: "Minimal" },

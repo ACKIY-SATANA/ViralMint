@@ -10,6 +10,7 @@ import ToolRunner from "../../components/tools/ToolRunner"
 import PromptField from "../../components/tools/PromptField"
 import useDocumentTitle from "../../hooks/useDocumentTitle"
 import useAppStore from "../../store/appStore"
+import useJobOutput from "../../hooks/useJobOutput"
 
 // Metadata generator — three input modes (paste text / pick a topic /
 // upload a video). The result is parsed JSON returned in the job's
@@ -31,12 +32,12 @@ const MODES = [
 ]
 
 function ResultPreview({ jobId }) {
-  // Pulls the parsed metadata from appStore.activeJobs[jobId].output
-  // (set via the job_complete WS event with `output_data` from the
-  // runner). Falls back to a download-link prompt if the entry isn't
-  // there (e.g. after the auto-cleanup timer fires).
-  const job = useAppStore((s) => s.activeJobs[jobId])
-  const metadata = job?.output?.metadata
+  // The job's own output_json, via the shared hook: the store never carries a
+  // structured `output`, so reading it here meant this preview could never
+  // render — the "click Download instead" fallback was all anyone ever saw.
+  // Going through the hook also makes it survive a reload.
+  const { output, loading } = useJobOutput(jobId)
+  const metadata = output?.metadata
   const showSnackbar = useAppStore((s) => s.showSnackbar)
   const copy = (s) => {
     if (!s) return
@@ -48,8 +49,9 @@ function ResultPreview({ jobId }) {
   if (!metadata) {
     return (
       <Alert severity="info" sx={{ fontSize: "0.85rem" }}>
-        Result ready — click <strong>Download</strong> below to get the JSON file. (Inline
-        preview unavailable — the session likely cleared the cached result.)
+        {loading
+          ? "Loading result…"
+          : <>Result ready — click <strong>Download</strong> below to get the JSON file.</>}
       </Alert>
     )
   }

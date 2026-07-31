@@ -8,6 +8,7 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy"
 import ToolRunner from "../../components/tools/ToolRunner"
 import useDocumentTitle from "../../hooks/useDocumentTitle"
 import useAppStore from "../../store/appStore"
+import useJobOutput from "../../hooks/useJobOutput"
 
 // Auto-chapters tool. Whisper-transcribe → AI clusters into chapters →
 // emit a `MM:SS Title` text file. Inline preview shows the chapter list
@@ -30,9 +31,11 @@ function chaptersToText(chapters) {
 }
 
 function ResultPreview({ jobId }) {
-  const job = useAppStore((s) => s.activeJobs[jobId])
+  // See useJobOutput: the store never carries a structured `output`, so this
+  // chapter list could never render before — the fallback was all anyone saw.
+  const { output, loading } = useJobOutput(jobId)
   const showSnackbar = useAppStore((s) => s.showSnackbar)
-  const chapters = job?.output?.chapters || []
+  const chapters = output?.chapters || []
   const copy = (s) => navigator.clipboard.writeText(s).then(
     () => showSnackbar?.("Copied", "success"),
     () => showSnackbar?.("Could not copy", "warning"),
@@ -40,7 +43,9 @@ function ResultPreview({ jobId }) {
   if (chapters.length === 0) {
     return (
       <Alert severity="info" sx={{ fontSize: "0.85rem" }}>
-        Result ready — click <strong>Download</strong> below to get the text file.
+        {loading
+          ? "Loading result…"
+          : <>Result ready — click <strong>Download</strong> below to get the text file.</>}
       </Alert>
     )
   }
