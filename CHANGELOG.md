@@ -34,6 +34,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Fixed
+- **The Audio tools accept audio.** Enhance Audio and Silence Remover validated
+  uploads against the video extensions only, so a podcast mp3 was rejected with
+  a 400 *after* the upload — on the two tools whose whole job is the audio
+  track. Both now take video or mp3/wav/m4a/aac/ogg/flac, and audio in means
+  mp3 out.
+- **Enhance Audio works on WebM, and never reports success over an empty file.**
+  `-c:v copy` into an .mp4 is invalid for VP8/VP9 — and .webm is what most
+  screen recorders export — so the job failed with a raw ffmpeg codec-tag
+  error. It now retries with an H.264 re-encode, refuses to finish over a
+  missing/0-byte output, and says plainly when a file has no audio track
+  instead of surfacing a filtergraph error.
+- **Silence removal is budgeted against the source length.** The ffmpeg pass
+  re-encodes the whole timeline but carried a flat cap sized for 30-second
+  clipper clips, so a long recording died on a raw `TimeoutExpired` with the
+  entire command line in the message. The budget now scales with the source
+  (measured, not "where the last word ends"), with a floor, a 30-minute
+  ceiling, and a readable message if it is ever hit.
 - **The Library no longer returns a short (or empty) page after self-healing.**
   The prune that removes rows whose file is gone ran inside the fetched page
   and returned what was left, so a library with enough stale rows could answer

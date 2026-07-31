@@ -2015,11 +2015,52 @@ MIN_KEEP_DURATION = 0.15
 # Padding around kept segments to avoid harsh cuts
 KEEP_PAD_SECONDS = 0.03
 
+# The select/aselect pass re-encodes the WHOLE timeline, so its runtime scales
+# with the source, not with how much gets cut. A flat 120 s cap was fine while
+# this only ever saw 30-60 s clipper clips; the Silence Remover TOOL feeds it
+# whole videos and podcasts, where the cap fired as a raw TimeoutExpired
+# carrying the entire ffmpeg argv into the UI. Budget ~6x realtime —
+# comfortably slower than any machine we support — with a floor for short clips
+# and a 30 min ceiling so a pathological input can't pin a worker forever.
+SILENCE_TIMEOUT_FLOOR_S = 300
+SILENCE_TIMEOUT_CEILING_S = 1800
+SILENCE_TIMEOUT_REALTIME_FACTOR = 6
+
+
+def _silence_removal_timeout(duration_s: float) -> int:
+    """ffmpeg wall-clock budget for a select/aselect pass over `duration_s`."""
+    budget = float(duration_s or 0) * SILENCE_TIMEOUT_REALTIME_FACTOR
+    return int(min(max(budget, SILENCE_TIMEOUT_FLOOR_S), SILENCE_TIMEOUT_CEILING_S))
+
+
+def _has_video_stream(path: Path) -> bool:
+    """True when the file carries a video stream (False for a bare mp3/wav).
+
+    Conservative on probe failure: assume video, since that is what every
+    caller but the audio-input tool path passes.
+    """
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "v",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode != 0:
+            return True
+        return "video" in (r.stdout or "")
+    except Exception:
+        return True
+
 
 async def _remove_silence_and_fillers(clip_path: Path, segments: list[dict]) -> tuple[Path, list[dict]]:
     """
     Remove silent gaps and filler words from a clip using FFmpeg select/aselect filters.
     Returns (new_clip_path, adjusted_segments) with re-timed word timestamps.
+
+    Works on video OR on a bare audio file (the Silence Remover tool accepts
+    podcasts): audio-only inputs skip the video half of the filtergraph and
+    come back as mp3.
 
     Self-contained: shells out to ffmpeg directly (argv list, never shell=True),
     no external service dependency.
@@ -2107,21 +2148,48 @@ async def _remove_silence_and_fillers(clip_path: Path, segments: list[dict]) -> 
     select_parts = [f"between(t\\,{s:.3f}\\,{e:.3f})" for s, e in keep_ranges]
     select_expr = "+".join(select_parts)
 
-    output_path = clip_path.parent / f"{clip_path.stem}_cleaned{clip_path.suffix}"
+    has_video = await asyncio.to_thread(_has_video_stream, clip_path)
+    # Output container is chosen by what we ENCODE, not by what came in: a
+    # .webm input re-encoded to H.264 is rejected by the WebM muxer ("only
+    # VP8/VP9/AV1 ... are supported"), which failed the whole run.
+    out_suffix = ".mp4" if has_video else ".mp3"
+    output_path = clip_path.parent / f"{clip_path.stem}_cleaned{out_suffix}"
+    # Budget against the SOURCE length, not the last word: ffmpeg decodes the
+    # whole timeline even though `select` only encodes the kept ranges, so a
+    # 60-minute recording whose speech stops at minute two still costs 60
+    # minutes of decode. `original_duration` (last word end) would size that
+    # run at the floor and time it out.
+    from backend.services.video_utils import probe_duration
+    source_duration = await asyncio.to_thread(probe_duration, clip_path, 0.0)
+    timeout_s = _silence_removal_timeout(max(original_duration, source_duration))
 
     def _run():
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(clip_path),
-            "-vf", f"select='{select_expr}',setpts=N/FRAME_RATE/TB",
-            "-af", f"aselect='{select_expr}',asetpts=N/SR/TB",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart",
-            str(output_path),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        cmd = ["ffmpeg", "-y", "-i", str(clip_path)]
+        if has_video:
+            cmd += [
+                "-vf", f"select='{select_expr}',setpts=N/FRAME_RATE/TB",
+                "-af", f"aselect='{select_expr}',asetpts=N/SR/TB",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+            ]
+        else:
+            cmd += [
+                "-af", f"aselect='{select_expr}',asetpts=N/SR/TB",
+                "-c:a", "libmp3lame", "-q:a", "2",
+            ]
+        cmd.append(str(output_path))
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        except subprocess.TimeoutExpired as e:
+            # The default repr embeds the whole argv (absolute paths, filter
+            # graph) and reaches the user verbatim via _tool_fail.
+            raise RuntimeError(
+                f"Silence removal timed out after {timeout_s // 60} min on a "
+                f"{max(original_duration, source_duration) / 60:.0f} min source. "
+                f"Trim it into shorter pieces and run them separately."
+            ) from e
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg silence removal failed: {result.stderr[-500:]}")
 

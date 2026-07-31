@@ -2,7 +2,7 @@
 # Copyright (c) 2025-2026 ViralMint Contributors
 """The Clipper must measure the finished file, not trust the request.
 
-Three ported fixes are locked in here.
+Four ported fixes are locked in here.
 
 1. caption_style="none" burned viral subtitles anyway. Clip Studio offers a
    "none" chip and even greys out AutoEmoji when it's picked, but nothing
@@ -19,6 +19,12 @@ Three ported fixes are locked in here.
 3. AI metadata was spread LAST and unfiltered into the clip dict, so any key
    the model invented won — including `video_path`, which is what we persist
    and serve.
+
+4. The silence-removal ffmpeg pass carried a flat 120 s cap sized for 30-second
+   clipper clips, and named its output after the INPUT container. Pointed at a
+   podcast by the Silence Remover tool, it timed out (dumping the whole argv
+   into the UI) — or, from a .webm source, asked the WebM muxer to accept
+   H.264.
 """
 from __future__ import annotations
 
@@ -148,3 +154,54 @@ class TestMetadataWhitelist:
     @pytest.mark.parametrize("bad", [None, "a string", 42, ["list"]])
     def test_non_dict_model_output_is_dropped(self, bad):
         assert _metadata_only(bad) == {}
+
+
+# ── 4. limits sized for the source, not for a 30-second clip ───────────────
+
+class TestSilenceRemovalTimeout:
+    """The select/aselect pass re-encodes the WHOLE timeline, so its runtime
+    scales with the source. A flat 120 s cap was fine while only the clipper
+    used it; the Silence Remover tool feeds it whole videos and podcasts, where
+    the cap fired as a raw TimeoutExpired carrying the entire ffmpeg argv."""
+
+    def test_short_sources_get_the_floor(self):
+        from backend.services.clip_extractor import (
+            _silence_removal_timeout, SILENCE_TIMEOUT_FLOOR_S,
+        )
+        assert _silence_removal_timeout(10) == SILENCE_TIMEOUT_FLOOR_S
+        assert _silence_removal_timeout(0) == SILENCE_TIMEOUT_FLOOR_S
+        assert _silence_removal_timeout(None) == SILENCE_TIMEOUT_FLOOR_S
+
+    def test_long_sources_scale_with_realtime(self):
+        from backend.services.clip_extractor import _silence_removal_timeout
+        assert _silence_removal_timeout(120) == 720      # 2 min  -> 12 min
+        assert _silence_removal_timeout(300) == 1800     # 5 min  -> ceiling
+
+    def test_ceiling_bounds_a_pathological_input(self):
+        from backend.services.clip_extractor import (
+            _silence_removal_timeout, SILENCE_TIMEOUT_CEILING_S,
+        )
+        assert _silence_removal_timeout(100_000) == SILENCE_TIMEOUT_CEILING_S
+
+
+class TestHasVideoStream:
+    def test_true_for_a_video(self):
+        from unittest.mock import MagicMock, patch
+        from backend.services.clip_extractor import _has_video_stream
+        with patch("subprocess.run",
+                   return_value=MagicMock(returncode=0, stdout="video\n")):
+            assert _has_video_stream(Path("/x.mp4")) is True
+
+    def test_false_for_a_bare_audio_file(self):
+        from unittest.mock import MagicMock, patch
+        from backend.services.clip_extractor import _has_video_stream
+        with patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")):
+            assert _has_video_stream(Path("/x.mp3")) is False
+
+    def test_probe_failure_assumes_video(self):
+        """Conservative: every caller but the audio-input tool path passes
+        video, and the video branch works on audio-carrying containers."""
+        from unittest.mock import patch
+        from backend.services.clip_extractor import _has_video_stream
+        with patch("subprocess.run", side_effect=OSError("no ffprobe")):
+            assert _has_video_stream(Path("/x.mp4")) is True

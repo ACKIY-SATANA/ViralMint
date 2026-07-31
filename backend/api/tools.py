@@ -44,6 +44,11 @@ VIDEO_MAX_BYTES = 1000 * 1024 * 1024  # 1000 MB
 LOGO_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
+# The Audio tools take audio as well as video. They used to validate against
+# VIDEO_EXTS alone, so a podcast mp3 was rejected with a 400 AFTER the upload
+# had been sent — on the tools whose whole job is the audio track.
+AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
+MEDIA_EXTS = VIDEO_EXTS | AUDIO_EXTS
 
 
 async def save_upload(
@@ -210,7 +215,7 @@ async def audio_enhance_tool(
     from backend.core.task_runner import dispatch
     from backend.core.tool_runners import run_tool_audio_enhance
     job = await create_job("tool:audio_enhance", "local", {})
-    in_path = await save_upload(file, job.id, VIDEO_EXTS, VIDEO_MAX_BYTES)
+    in_path = await save_upload(file, job.id, MEDIA_EXTS, VIDEO_MAX_BYTES)
     dispatch(run_tool_audio_enhance(job.id, in_path))
     return {"job_id": job.id}
 
@@ -278,7 +283,7 @@ async def remove_silence_tool(
     from backend.core.task_runner import dispatch
     from backend.core.tool_runners import run_tool_remove_silence
     job = await create_job("tool:remove_silence", "local", {})
-    in_path = await save_upload(file, job.id, VIDEO_EXTS, VIDEO_MAX_BYTES)
+    in_path = await save_upload(file, job.id, MEDIA_EXTS, VIDEO_MAX_BYTES)
     dispatch(run_tool_remove_silence(job.id, in_path))
     return {"job_id": job.id}
 

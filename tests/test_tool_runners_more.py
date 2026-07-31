@@ -338,15 +338,103 @@ class TestSpeed:
 
 @pytest.mark.asyncio
 class TestAudioEnhance:
+    @staticmethod
+    def _writes(out_path, returncode=0, stderr=""):
+        """An ffmpeg stand-in that produces a real (non-empty) output file."""
+        def _run(cmd, **kw):
+            if returncode == 0:
+                Path(out_path).write_bytes(b"\x00" * 32)
+            return MagicMock(returncode=returncode, stderr=stderr)
+        return _run
+
     async def test_success(self, terminal_spies, out_dir):
-        with patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
+        with patch("backend.services.ffmpeg_service.has_audio_stream",
+                   new=AsyncMock(return_value=True)), \
+             patch("backend.services.clip_extractor._has_video_stream",
+                   return_value=True), \
+             patch.object(trun, "subprocess") as sp:
+            sp.run.side_effect = self._writes(out_dir / "out.mp4")
             await trun.run_tool_audio_enhance("j1", IN)
         terminal_spies["success"].assert_awaited()
 
     async def test_error_routes_to_fail(self, terminal_spies, out_dir):
-        with patch("subprocess.run", return_value=MagicMock(returncode=1, stderr="boom")):
+        with patch("backend.services.ffmpeg_service.has_audio_stream",
+                   new=AsyncMock(return_value=True)), \
+             patch("backend.services.clip_extractor._has_video_stream",
+                   return_value=True), \
+             patch.object(trun, "subprocess") as sp:
+            sp.run.return_value = MagicMock(returncode=1, stderr="boom")
             await trun.run_tool_audio_enhance("j1", IN)
         terminal_spies["fail"].assert_awaited()
+
+    async def test_no_audio_track_fails_instead_of_running_ffmpeg(
+            self, terminal_spies, out_dir):
+        """A source with no audio is a guaranteed no-op — say so plainly
+        instead of surfacing ffmpeg's filtergraph error."""
+        with patch("backend.services.ffmpeg_service.has_audio_stream",
+                   new=AsyncMock(return_value=False)), \
+             patch.object(trun, "subprocess") as sp:
+            await trun.run_tool_audio_enhance("j1", IN)
+        sp.run.assert_not_called()
+        terminal_spies["fail"].assert_awaited()
+        terminal_spies["success"].assert_not_awaited()
+
+    async def test_webm_falls_back_to_a_reencode(self, terminal_spies, out_dir):
+        """`-c:v copy` into .mp4 is invalid for VP8/VP9 — and .webm is what
+        most screen recorders export. The copy pass failing must not fail the
+        job; the H.264 pass is the point."""
+        calls = []
+
+        def _run(cmd, **kw):
+            calls.append(cmd)
+            if "copy" in cmd:
+                return MagicMock(returncode=1, stderr="Could not find tag for codec vp9")
+            (out_dir / "out.mp4").write_bytes(b"\x00" * 32)
+            return MagicMock(returncode=0, stderr="")
+
+        with patch("backend.services.ffmpeg_service.has_audio_stream",
+                   new=AsyncMock(return_value=True)), \
+             patch("backend.services.clip_extractor._has_video_stream",
+                   return_value=True), \
+             patch.object(trun, "subprocess") as sp:
+            sp.run.side_effect = _run
+            await trun.run_tool_audio_enhance("j1", Path("/nonexistent/in.webm"))
+        assert len(calls) == 2, "the re-encode pass must run after the copy pass"
+        assert "libx264" in calls[1]
+        terminal_spies["success"].assert_awaited()
+
+    async def test_a_zero_byte_output_is_a_failure_not_a_success(
+            self, terminal_spies, out_dir):
+        """ffmpeg can exit 0 having written nothing usable; serving a 0-byte
+        download under a green "success" is the worst outcome."""
+        with patch("backend.services.ffmpeg_service.has_audio_stream",
+                   new=AsyncMock(return_value=True)), \
+             patch("backend.services.clip_extractor._has_video_stream",
+                   return_value=True), \
+             patch.object(trun, "subprocess") as sp:
+            sp.run.return_value = MagicMock(returncode=0, stderr="")
+            await trun.run_tool_audio_enhance("j1", IN)   # nothing written
+        terminal_spies["fail"].assert_awaited()
+        terminal_spies["success"].assert_not_awaited()
+
+    async def test_audio_input_returns_mp3(self, terminal_spies, out_dir):
+        """An mp3 podcast has no video stream to copy — the tool must encode
+        audio out, not try to build an mp4."""
+        def _run(cmd, **kw):
+            (out_dir / "out.mp3").write_bytes(b"\x00" * 32)
+            return MagicMock(returncode=0, stderr="")
+
+        with patch("backend.services.ffmpeg_service.has_audio_stream",
+                   new=AsyncMock(return_value=True)), \
+             patch("backend.services.clip_extractor._has_video_stream",
+                   return_value=False), \
+             patch.object(trun, "subprocess") as sp:
+            sp.run.side_effect = _run
+            await trun.run_tool_audio_enhance("j1", Path("/nonexistent/pod.mp3"))
+        cmd = sp.run.call_args[0][0]
+        assert "libmp3lame" in cmd
+        assert str(out_dir / "out.mp3") in cmd
+        terminal_spies["success"].assert_awaited()
 
 
 # ── gif ─────────────────────────────────────────────────────────────────────
