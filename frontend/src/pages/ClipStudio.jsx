@@ -410,6 +410,11 @@ function CaptionStylePicker({ value, onChange }) {
             sx={{ textTransform: "capitalize", cursor: "pointer" }} />
         ))}
       </Stack>
+      {value === "none" && (
+        <Typography variant="caption" sx={{ color: "text.secondary", mt: 0.5, display: "block" }}>
+          No burned-in text at all — the hook overlay is skipped too.
+        </Typography>
+      )}
     </Box>
   )
 }

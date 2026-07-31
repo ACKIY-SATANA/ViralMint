@@ -78,6 +78,26 @@ def insert_emojis_into_words(words: list[dict], style: str = "moderate") -> list
 
 # ── Caption Style Presets ──────────────────────────────────────────────────────
 
+# Style names that mean "don't burn captions at all".
+#
+# `generate_captions_ass` falls back to the "viral" preset for ANY unknown
+# style name (a deliberate never-crash default), so a caller that forwards
+# "none" straight through gets fully-burned viral captions instead of a bare
+# clip. Every caller that exposes a "no captions" choice MUST check this
+# BEFORE reaching the ASS builder. Bug: Clip Studio's "none" chip burned
+# viral subtitles onto every extracted clip.
+CAPTIONS_OFF = frozenset({"none", "off", "disabled"})
+
+
+def captions_disabled(style: str | None) -> bool:
+    """True when `style` is a "no captions" sentinel (see CAPTIONS_OFF).
+
+    `None` / empty is NOT disabled — those mean "caller didn't specify",
+    and existing callers normalize them to their own default.
+    """
+    return (style or "").strip().lower() in CAPTIONS_OFF
+
+
 # Caption styles. Note on positioning:
 # - `alignment` is ASS numpad: 1=bot-L, 2=bot-C, 3=bot-R, 5=mid-C, 8=top-C, etc.
 #   ALL "active" styles use alignment=2 (bottom-center) so margin_v actually

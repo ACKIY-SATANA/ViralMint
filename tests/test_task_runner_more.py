@@ -428,3 +428,27 @@ class TestRunExtractClips:
                    new=AsyncMock(return_value=[])):
             await tr.run_extract_clips("job1", "dv1", ExtractOptions())
         assert "failed" in _statuses(job_status_spy)
+
+    async def test_row_takes_the_probed_aspect_not_a_hardcoded_9_16(
+            self, job_status_spy, ws_spy):
+        """Extraction only reframes a LANDSCAPE source, so a square / 4:5 clip
+        keeps its own shape — persisting "9:16" regardless made the Library
+        size the tile wrong and hid the clip from the 16:9 filter chip."""
+        from backend.services.clip_options import ExtractOptions
+        video = MagicMock(); video.title = "Src"
+        cm, session = _fake_session_cm(scalar_return=video)
+        clips = [
+            {"video_path": "/tmp/a.mp4", "aspect_ratio": "16:9",
+             "duration_seconds": 16, "start": 0, "end": 18},
+            {"video_path": "/tmp/b.mp4", "duration_seconds": 9,
+             "start": 20, "end": 29},           # unprobed → historical default
+        ]
+        with patch("backend.database.AsyncSessionLocal", return_value=cm()), \
+             patch("backend.services.clip_extractor.extract_viral_clips",
+                   new=AsyncMock(return_value=clips)):
+            await tr.run_extract_clips("job1", "dv1", ExtractOptions())
+        rows = [c.args[0] for c in session.add.call_args_list]
+        assert [r.aspect_ratio for r in rows] == ["16:9", "9:16"]
+        # duration comes from the clip dict (the extractor probed the file),
+        # not from end-start — remove_silence can cut it well short.
+        assert [r.duration_seconds for r in rows] == [16, 9]

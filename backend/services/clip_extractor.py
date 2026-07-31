@@ -1741,9 +1741,18 @@ async def _process_clips_parallel(
     else:
         cleaned_segments_list = None  # signals to use normal segment filtering
 
-    # Phase 2: Burn captions in parallel (on successfully extracted clips)
+    # Phase 2: Burn captions in parallel (on successfully extracted clips).
+    # `_burn_clip_captions` is still called per-clip when captions are off —
+    # it no-ops to "skipped" — so the extract_failed propagation below stays
+    # in one place. Only the progress copy branches.
     if job_id:
-        await ws_manager.send_progress(job_id, 55, f"Adding captions to {total} clips...", user_id)
+        from backend.services.caption_service import captions_disabled
+        await ws_manager.send_progress(
+            job_id, 55,
+            f"Skipping captions for {total} clips..." if captions_disabled(caption_style)
+            else f"Adding captions to {total} clips...",
+            user_id,
+        )
 
     hook_enabled = bool(getattr(user_settings, "hook_overlay_enabled", True))
 
@@ -1769,6 +1778,27 @@ async def _process_clips_parallel(
     if job_id:
         await ws_manager.send_progress(job_id, 75, f"Generating thumbnails and metadata...", user_id)
 
+    # Measure each finished clip ONCE. The request is not the file: extraction
+    # only reframes a LANDSCAPE source, so a square / 4:5 source keeps its own
+    # shape, and remove_silence cuts content out so the window overstates the
+    # length. One probe feeds the persisted aspect, the persisted duration and
+    # the thumbnail timestamp (which could otherwise land past the end of a
+    # heavily-trimmed clip).
+    from backend.services.video_utils import probe_media, aspect_from_dims
+
+    async def _probe_one(cap_result):
+        if isinstance(cap_result, Exception):
+            return None
+        path, _status = cap_result
+        if not isinstance(path, Path):
+            return None
+        w, h, dur = await asyncio.to_thread(probe_media, path)
+        return {"aspect": aspect_from_dims(w, h), "duration": dur}
+
+    clip_probes = await asyncio.gather(
+        *[_probe_one(cr) for cr in caption_results], return_exceptions=True,
+    )
+
     results = []
     thumb_tasks = []
     meta_inputs: list[tuple[str, str]] = []  # (title, transcript_text) per kept clip
@@ -1776,6 +1806,15 @@ async def _process_clips_parallel(
     for i, (cap_result, window) in enumerate(zip(caption_results, clip_windows)):
         if isinstance(cap_result, Exception):
             logger.error(f"Clip {i+1} processing failed: {cap_result}")
+            # The clip was already cut before the caption stage blew up.
+            # Nothing references that file once we drop the clip, so delete
+            # it instead of orphaning it in the generated dir.
+            orphan = clip_paths[i] if i < len(clip_paths) else None
+            if isinstance(orphan, Path):
+                try:
+                    orphan.unlink(missing_ok=True)
+                except Exception:
+                    pass
             continue
 
         captioned_path, caption_status = cap_result
@@ -1792,8 +1831,14 @@ async def _process_clips_parallel(
             continue
         clip_segments = _filter_and_offset_segments(segments, window["start"], window["end"])
 
-        # Adaptive thumbnail timestamp (30% through clip, max 5s)
-        clip_dur = window["end"] - window["start"]
+        probe = clip_probes[i] if i < len(clip_probes) else None
+        if isinstance(probe, Exception) or not isinstance(probe, dict):
+            probe = None
+
+        # Adaptive thumbnail timestamp (30% through clip, max 5s). Measured
+        # duration when we have it: a 15s window that remove_silence trimmed
+        # to 4s would otherwise ask for a frame at 4.5s, past the end.
+        clip_dur = (probe or {}).get("duration") or (window["end"] - window["start"])
         thumb_ts = min(clip_dur * 0.3, 5.0)
         thumb_tasks.append(_ffmpeg_limited(extract_thumbnail(captioned_path, timestamp=thumb_ts)))
 
@@ -1804,6 +1849,7 @@ async def _process_clips_parallel(
             "_index": i,
             "captioned_path": captioned_path,
             "caption_status": caption_status,
+            "probe": probe,
             "window": window,
             "clip_segments": clip_segments,
             "raw_clip_path": clip_paths[i] if not isinstance(clip_paths[i], Exception) else None,
@@ -1878,6 +1924,13 @@ async def _process_clips_parallel(
             except Exception:
                 pass
 
+        # Measured in the probe phase above — the FILE's real shape and
+        # length, not the requested window's. Falls back to the window when
+        # the probe failed, which is the historical behaviour.
+        probe = r.get("probe") or {}
+        probed_duration = probe.get("duration") or 0.0
+        probed_aspect = probe.get("aspect")
+
         final_results.append({
             "video_path": captioned_path,
             "thumbnail_path": thumb_path,
@@ -1889,12 +1942,21 @@ async def _process_clips_parallel(
             "reason": window.get("reason", ""),
             "start": window["start"],
             "end": window["end"],
-            "duration_seconds": int(window["end"] - window["start"]),
+            "duration_seconds": (
+                int(round(probed_duration)) if probed_duration > 0
+                else int(window["end"] - window["start"])
+            ),
+            "aspect_ratio": probed_aspect,
             "virality_score": window.get("virality_score", 5.0),
             "score_breakdown": window.get("score_breakdown") or {},
             "caption_status": caption_status,
             "metadata_status": metadata_status,
-            **metadata,
+            # Whitelisted LAST-position spread: `metadata` is model output, and
+            # an unfiltered `**metadata` let any stray key the model invented
+            # (video_path, start/end, duration_seconds, caption_status)
+            # overwrite the pipeline's own value. _metadata_only keeps the four
+            # fields we asked for and drops the rest.
+            **_metadata_only(metadata),
         })
 
     return final_results
@@ -2122,7 +2184,20 @@ async def _burn_clip_captions(
 
     `emoji_style` ("none" / "minimal" / "moderate" / "heavy") controls
     AutoEmoji density. Default "moderate" matches the historical behavior.
+
+    A `style` of "none" (see caption_service.CAPTIONS_OFF) means the user
+    asked for NO burned-in text — we return the clip untouched with status
+    "skipped". This check has to live here, before generate_captions_ass,
+    because that function falls back to the "viral" preset for any style
+    name it doesn't recognise, so "none" used to burn viral subs onto every
+    clip. The hook overlay rides the same ASS file, so it's skipped too —
+    "none" means no burned text of any kind.
     """
+    from backend.services.caption_service import captions_disabled
+
+    if captions_disabled(style):
+        return clip_path, "skipped"
+
     # Silent clips with no hook have nothing to burn.
     if not segments and not hook_text:
         return clip_path, "no_segments"
@@ -2181,6 +2256,27 @@ async def _burn_clip_captions(
     except Exception as e:
         logger.warning(f"Caption burning failed for clip {clip_path.name}: {e}")
         return clip_path, "failed"
+
+
+# The only keys the metadata prompts ask for, and the only ones any consumer
+# reads (see run_extract_clips' GeneratedVideo(...) construction).
+_METADATA_KEYS = ("youtube_title", "youtube_description", "youtube_tags", "tiktok_title")
+
+
+def _metadata_only(metadata) -> dict:
+    """Keep just the four metadata fields; drop anything else the model added.
+
+    The clip result dict is assembled with the metadata spread LAST, so an
+    unfiltered merge let a hallucinated key silently overwrite a
+    pipeline-owned field — `video_path` (what we persist and serve),
+    `start`/`end`/`duration_seconds`, or `caption_status`. Filtering at the
+    point where model output joins our own dict is the one choke point that
+    covers every metadata path (batched, per-clip fallback, and
+    `_default_metadata`).
+    """
+    if not isinstance(metadata, dict):
+        return {}
+    return {k: metadata[k] for k in _METADATA_KEYS if k in metadata}
 
 
 def _default_metadata(title: str, transcript_text: str) -> dict:

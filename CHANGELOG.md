@@ -34,6 +34,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Fixed
+- **Caption style "None" really means no captions.** Clip Studio's "none" chip
+  (which even greys out AutoEmoji when you pick it) was never treated as a
+  sentinel backend-side: the ASS builder falls back to the "viral" preset for
+  any style name it doesn't recognise, so every "no captions" extraction came
+  back with fully burned-in yellow word-by-word subtitles. "None" now skips the
+  burn entirely — including the hook overlay, which rides the same file.
+- **Extracted clips are labelled with their real shape and length.** Every clip
+  row was written as 9:16 with the requested window's duration. Extraction only
+  reframes a *landscape* source, so square and 4:5 sources kept their own shape
+  and were mislabelled — the Library sizes each tile from that column — and
+  "Remove silence" cuts content out, so the stored duration overstated the file.
+  Both are now probed from the finished clip, which also stops the thumbnail
+  timestamp landing past the end of a heavily-trimmed clip.
+- **AI metadata can no longer overwrite a clip's own fields.** The model's
+  metadata was merged into the clip record last and unfiltered, so any key it
+  invented won — including `video_path`, the file we persist and serve. Only
+  the four requested fields are kept now.
 - **Exporting a vertical video to 16:9 no longer shrinks the picture.** The
   export hardcoded the blur-fill look, which FITS the whole source inside the
   target frame. Going the other way (16:9 → 9:16) that is exactly right and it
