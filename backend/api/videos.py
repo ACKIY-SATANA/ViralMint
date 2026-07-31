@@ -349,17 +349,21 @@ async def stream_video(video_id: str, db: AsyncSession = Depends(get_db)):
 async def export_video(video_id: str, body: dict = None, db: AsyncSession = Depends(get_db)):
     """
     Export a generated video to a different aspect ratio.
-    Body: { "target_aspect": "16:9", "method": "blur_fill" }
+    Body: { "target_aspect": "16:9", "method": "auto" }
     Supported aspects: 9:16, 16:9, 1:1, 4:5
-    Methods: letterbox, crop, blur_fill
+    Methods: auto, letterbox, crop, blur_fill
     """
     body = body or {}
     target_aspect = body.get("target_aspect", "16:9")
-    method = body.get("method", "blur_fill")
+    # "auto" picks crop when WIDENING and blur_fill when narrowing —
+    # fitting a 9:16 short inside 16:9 left the content a narrow strip at a
+    # third of the frame (see ffmpeg_service.pick_reframe_method). An
+    # explicit method from the caller still wins.
+    method = body.get("method", "auto")
 
     if target_aspect not in ("9:16", "16:9", "1:1", "4:5"):
         raise HTTPException(status_code=400, detail=f"Unsupported aspect ratio: {target_aspect}")
-    if method not in ("letterbox", "crop", "blur_fill"):
+    if method not in ("auto", "letterbox", "crop", "blur_fill"):
         raise HTTPException(status_code=400, detail=f"Unsupported method: {method}")
 
     result = await db.execute(
@@ -378,9 +382,22 @@ async def export_video(video_id: str, body: dict = None, db: AsyncSession = Depe
         return FileResponse(source_path, media_type="video/mp4",
                             filename=f"{video.title or 'video'}_{target_aspect.replace(':', 'x')}.mp4")
 
+    # Reuse a cached landscape export if one is already on disk
+    if target_aspect == "16:9" and video.video_path_landscape:
+        cached = _safe_resolve_path(video.video_path_landscape)
+        if cached.exists():
+            return FileResponse(cached, media_type="video/mp4",
+                                filename=f"{video.title or 'video'}_16x9.mp4")
+
     from backend.services.ffmpeg_service import convert_aspect_ratio
     try:
         output_path = await convert_aspect_ratio(source_path, target_aspect=target_aspect, method=method)
+        # Cache the landscape export so stream_video_format can serve it
+        # without re-converting (this is what the duplicate, always-shadowed
+        # export_video_format route used to do before it was removed).
+        if target_aspect == "16:9":
+            video.video_path_landscape = str(output_path)
+            await db.commit()
         return FileResponse(output_path, media_type="video/mp4",
                             filename=f"{video.title or 'video'}_{target_aspect.replace(':', 'x')}.mp4")
     except Exception as e:
@@ -434,52 +451,12 @@ async def get_thumbnail(video_id: str, db: AsyncSession = Depends(get_db)):
     return FileResponse(path, media_type="image/jpeg")
 
 
-@router.post("/videos/{video_id}/export")
-async def export_video_format(video_id: str, body: dict = None, db: AsyncSession = Depends(get_db)):
-    """
-    Export a generated video in a different aspect ratio.
-    Body: { "target_aspect": "16:9", "method": "letterbox" }
-    method: "letterbox" (black bars) | "crop" (center crop) | "blur_fill" (blurred bg)
-    Returns: { "path": "...", "aspect": "16:9" }
-    """
-    body = body or {}
-    target_aspect = body.get("target_aspect", "16:9")
-    method = body.get("method", "letterbox")
-
-    if target_aspect not in ("16:9", "9:16"):
-        raise HTTPException(status_code=400, detail="target_aspect must be '16:9' or '9:16'")
-    if method not in ("letterbox", "crop", "blur_fill"):
-        raise HTTPException(status_code=400, detail="method must be 'letterbox', 'crop', or 'blur_fill'")
-
-    result = await db.execute(
-        select(GeneratedVideo).where(GeneratedVideo.id == video_id)
-    )
-    video = result.scalar_one_or_none()
-    if not video or not video.video_path:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    source = _safe_resolve_path(video.video_path)
-    if not source.exists():
-        raise HTTPException(status_code=404, detail="Video file not found on disk")
-
-    from backend.services.ffmpeg_service import convert_aspect_ratio
-
-    exported_path = await convert_aspect_ratio(
-        video_path=source,
-        target_aspect=target_aspect,
-        method=method,
-    )
-
-    # Save the landscape path to DB
-    if target_aspect == "16:9":
-        video.video_path_landscape = str(exported_path)
-        await db.commit()
-
-    return {
-        "path": str(exported_path),
-        "aspect": target_aspect,
-        "method": method,
-    }
+# NOTE: a second `@router.post("/videos/{video_id}/export")` handler
+# (`export_video_format`, returning a JSON path instead of the file) used to
+# live here. FastAPI matches the FIRST registered route, so it was dead code
+# from the day it was added — every request went to `export_video` above. Its
+# one useful behaviour, caching the 16:9 render into `video_path_landscape`,
+# now lives there. Do not re-add a duplicate path.
 
 
 @router.get("/videos/{video_id}/stream/{aspect}")

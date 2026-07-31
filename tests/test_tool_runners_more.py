@@ -228,7 +228,7 @@ class TestCaptions:
 @pytest.mark.asyncio
 class TestReframe:
     async def test_noop_when_already_vertical(self, terminal_spies, out_dir):
-        with patch.object(trun, "_probe_aspect_ratio", new=AsyncMock(return_value="9:16")), \
+        with patch.object(trun, "_is_already_vertical", new=AsyncMock(return_value=True)), \
              patch("backend.core.ws_manager.ws_manager.send_constraint_warning",
                    new=AsyncMock()) as warn, \
              patch("shutil.copy2") as cp:
@@ -242,7 +242,7 @@ class TestReframe:
             Path(output_path).write_bytes(b"x")
             return output_path
 
-        with patch.object(trun, "_probe_aspect_ratio", new=AsyncMock(return_value="16:9")), \
+        with patch.object(trun, "_is_already_vertical", new=AsyncMock(return_value=False)), \
              patch("backend.services.ffmpeg_service.convert_aspect_ratio",
                    new=AsyncMock(side_effect=_conv)) as conv:
             await trun.run_tool_reframe("j1", IN)
@@ -250,10 +250,32 @@ class TestReframe:
         terminal_spies["success"].assert_awaited()
 
     async def test_probe_failure_routes_to_fail(self, terminal_spies, out_dir):
-        with patch.object(trun, "_probe_aspect_ratio",
+        with patch.object(trun, "_is_already_vertical",
                           new=AsyncMock(side_effect=RuntimeError("probe boom"))):
             await trun.run_tool_reframe("j1", IN)
         terminal_spies["fail"].assert_awaited()
+
+
+@pytest.mark.parametrize("dims,already_vertical", [
+    ((1080, 1920), True),    # 9:16 — genuinely nothing to crop
+    ((1080, 2400), True),    # narrower than 9:16
+    ((1080, 1080), False),   # square: HAS side content to crop
+    ((1080, 1350), False),   # 4:5: same
+    ((1920, 1080), False),   # landscape
+])
+def test_only_9_16_or_narrower_counts_as_vertical(dims, already_vertical):
+    """The old guard was `w <= h`, so square and 4:5 sources came back
+    byte-identical under an 'already vertical' notice."""
+    w, h = dims
+    with patch("subprocess.run") as run:
+        run.return_value.stdout = f"{w},{h}\n"
+        assert trun._is_already_vertical_sync(IN) is already_vertical
+
+
+def test_unreadable_dimensions_still_reframe():
+    """Doing nothing silently is worse than a redundant re-encode."""
+    with patch("subprocess.run", side_effect=OSError("no ffprobe")):
+        assert trun._is_already_vertical_sync(IN) is False
 
 
 # ── voiceover ───────────────────────────────────────────────────────────────

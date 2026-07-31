@@ -34,6 +34,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Fixed
+- **Exporting a vertical video to 16:9 no longer shrinks the picture.** The
+  export hardcoded the blur-fill look, which FITS the whole source inside the
+  target frame. Going the other way (16:9 → 9:16) that is exactly right and it
+  is how every short is built — but widening a 9:16 short left the content as a
+  narrow strip with blur either side, and because ViralMint shorts are
+  themselves blur-fill composites the export nested a second box and the
+  picture landed at about a third of the frame. Exports now default to `auto`:
+  crop when widening, blur-fill when narrowing. An explicit `method` still wins.
+- **Reframe to Vertical works on square and 4:5 sources.** The "already
+  vertical" short-circuit tested `width <= height`, so a 1080x1080 or 1080x1350
+  clip came back byte-identical with an "already vertical" notice instead of
+  being cropped to 9:16. Only 9:16-or-narrower has nothing to crop.
+- **Removed a dead duplicate export route.** A second
+  `POST /api/videos/{id}/export` handler had been shadowed by the first since
+  the day it was added; its one useful behaviour (caching the 16:9 render for
+  later streaming) now lives in the live handler.
 - **TikTok channels show their full video list.** The My Channels grid capped
   TikTok at 20 videos while the YouTube side fetched 200. Both are 200 now; the
   TikTok scrape is a single request either way.

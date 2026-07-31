@@ -51,6 +51,38 @@ async def _probe_aspect_ratio(video_path: Path) -> str:
     return await asyncio.to_thread(_probe_aspect_ratio_sync, video_path)
 
 
+# 9:16 as a ratio, with a 2% tolerance so 1079x1920 or 1080x1918 still counts.
+_VERTICAL_RATIO = 9 / 16
+
+
+def _is_already_vertical_sync(video_path: Path) -> bool:
+    """True only when the source is 9:16 or NARROWER — i.e. nothing to crop.
+
+    The old test was "portrait" (w <= h), which made Reframe a no-op on square
+    (1080x1080) and 4:5 (1080x1350) sources: they came back byte-identical with
+    an "already vertical" notice, even though both have side content a 9:16
+    crop would remove. Only a source at or below the 9:16 ratio is genuinely
+    done. Unreadable dimensions fall back to False so the reframe still runs —
+    re-encoding a video we can't measure is cheaper than silently doing nothing.
+    """
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0", str(video_path)],
+            capture_output=True, text=True, timeout=10,
+        )
+        w, h = map(int, r.stdout.strip().split(",")[:2])
+        if not w or not h:
+            return False
+        return (w / h) <= _VERTICAL_RATIO * 1.02
+    except Exception:
+        return False
+
+
+async def _is_already_vertical(video_path: Path) -> bool:
+    return await asyncio.to_thread(_is_already_vertical_sync, video_path)
+
+
 def _cleanup_paths(*paths: Path):
     """Best-effort delete of scratch files. Never raises."""
     for p in paths:
@@ -166,10 +198,10 @@ async def run_tool_reframe(job_id: str, in_path: Path, user_id: str = "local"):
     try:
         out_path = tool_out_path(job_id, ".mp4")
 
-        # If the source is already portrait there's nothing to reframe —
-        # return it unchanged with an info constraint warning.
-        aspect = await _probe_aspect_ratio(in_path)
-        if aspect == "9:16":
+        # If the source is already 9:16 (or narrower) there's nothing to
+        # reframe — return it unchanged with an info constraint warning.
+        # NOT "portrait": square and 4:5 sources DO have side content to crop.
+        if await _is_already_vertical(in_path):
             await _tool_progress(job_id, 50, "Source already vertical...", user_id)
             await asyncio.to_thread(shutil.copy2, str(in_path), str(out_path))
             await ws_manager.send_constraint_warning(
