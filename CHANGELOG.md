@@ -34,6 +34,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Fixed
+- **Translating a long video no longer dies on one bad batch.** Translation
+  sent every segment in a single AI call and enforced a strict 1:1 count by
+  raising, so a long video overflowed the token budget and a model that merged
+  two lines threw away the Whisper pass and everything already translated.
+  Segments now go in batches of 20, a batch that comes back the wrong length is
+  split and retried in halves down to single lines, and a line that fails even
+  alone keeps its source text instead of sliding every later caption off its
+  timestamp.
+- **Burning captions onto a long video no longer times out at the last step.**
+  The burn is a full re-encode on what was a flat 10-minute cap, so a 17-minute
+  video failed after transcription (and, in the Translate tool, translation)
+  had already run. The budget now scales with the source.
 - **Metadata and Auto Chapters show their result inline again.** Both previews
   read a field the store never wrote, so both always fell through to "click
   Download instead" — the copy-to-clipboard preview, which is the whole point

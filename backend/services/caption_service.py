@@ -944,6 +944,15 @@ async def burn_captions(
         )
         return video_path
 
+    # The burn is a full H.264 re-encode, so its wall-clock scales with the
+    # SOURCE length — a flat 600 s cap killed a 17-minute video at the last
+    # step, after transcription and (for the translate tool) translation had
+    # already run. Budget 3x realtime with the same floor, and a 90 min
+    # ceiling so a pathological input can't pin a worker forever.
+    from backend.services.video_utils import probe_duration
+    duration = await asyncio.to_thread(probe_duration, video_path, 0.0)
+    timeout_s = int(min(max(duration * 3, 600), 5400))
+
     def _burn():
         # Escape path for FFmpeg filter (colons and backslashes)
         escaped_ass = str(ass_path.resolve()).replace("\\", "/").replace(":", "\\:")
@@ -956,7 +965,14 @@ async def burn_captions(
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             str(output_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "ASS caption burn timed out after %d min on a %.0f min source "
+                "— returning the original video", timeout_s // 60, duration / 60,
+            )
+            return video_path
         if result.returncode != 0:
             logger.error(f"ASS caption burn FFmpeg error: {result.stderr[:500]}")
             return video_path  # Return original on failure

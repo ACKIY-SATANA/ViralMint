@@ -615,48 +615,148 @@ async def run_tool_merge_clips(
 
 # ── Translate (captions + optional Edge-TTS dub) ───────────────────────────
 
-_TRANSLATE_PROMPT = """Translate the following subtitle segments into {language}.
+_TRANSLATE_BATCH_SIZE = 20
 
-Return STRICT JSON only — no markdown fences — as a list with one entry per
-input segment, preserving order:
-{{"segments": [{{"start": <float>, "end": <float>, "text": "<translated text>"}}]}}
 
-Keep the timing values exactly as given. Translate only the text. Keep each
-translation concise enough to read in the same time window.
+def _translation_prompt(target_language: str, texts: list[str]) -> str:
+    """Build the per-batch translation prompt. Strict 1:1 contract: the output
+    array must have exactly the same length as the input."""
+    indexed = "\n".join(f"  [{i}] {t!r}" for i, t in enumerate(texts))
+    return f"""You translate video captions. Translate each line below into natural, conversational {target_language}. Preserve meaning — do NOT shorten, expand, or reorder lines.
 
-INPUT SEGMENTS (JSON):
-{segments_json}"""
+Source lines (each line is one caption segment):
+{indexed}
+
+Respond with ONLY a JSON array of strings, one per line, in the same order. The array MUST have exactly {len(texts)} elements — same as input.
+
+Example shape:
+["translated line 0", "translated line 1", ...]
+
+Respond with the JSON array only — no markdown, no commentary."""
 
 
 async def _translate_segments(segments: list[dict], target_language: str, user_settings) -> list[dict]:
     """AI-translate Whisper segments into the target language. Returns segments
-    with the same start/end timing and translated `text`."""
-    import json as _json
+    with the same start/end timing and translated `text`.
+
+    Batches in groups of _TRANSLATE_BATCH_SIZE — one AI call per batch. This
+    used to be a SINGLE call carrying every segment, which meant a long video
+    either blew the token budget or came back as truncated JSON, and either way
+    the whole job died after the Whisper pass had already run.
+
+    The 1:1 contract is real — a translation list shorter than its input slides
+    every later caption onto the wrong timestamp — but enforcing it by raising
+    is too brittle: one batch coming back 19-for-20 throws away everything
+    translated so far. A short batch is split and retried in halves down to
+    single lines, where the count can't be wrong; only a line that fails even
+    alone keeps its source text, marked `untranslated`.
+    """
     from backend.core.ai_provider import get_ai_client
 
     compact = [
-        {"start": float(s.get("start", 0)), "end": float(s.get("end", 0)), "text": (s.get("text") or "").strip()}
+        {"start": float(s.get("start", 0)), "end": float(s.get("end", 0)),
+         "text": (s.get("text") or "").strip(), **{k: v for k, v in s.items()
+                                                   if k not in ("start", "end", "text")}}
         for s in segments if (s.get("text") or "").strip()
     ]
     if not compact:
         return []
 
     ai = get_ai_client(user_settings)
-    raw = await ai.chat(
-        messages=[{"role": "user", "content": _TRANSLATE_PROMPT.format(
-            language=target_language, segments_json=_json.dumps(compact, ensure_ascii=False),
-        )}],
-        max_tokens=4000,
-    )
-    text = _strip_json_fence(raw)
-    try:
-        parsed = _json.loads(text)
-        out = parsed.get("segments", []) if isinstance(parsed, dict) else parsed
-    except _json.JSONDecodeError:
-        raise RuntimeError(f"AI returned malformed translation JSON: {text[:200]!r}")
-    if not isinstance(out, list) or not out:
+    out: list[dict] = []
+
+    for start in range(0, len(compact), _TRANSLATE_BATCH_SIZE):
+        batch = compact[start:start + _TRANSLATE_BATCH_SIZE]
+        source_texts = [s["text"] for s in batch]
+        translated, failed_idx = await _translate_batch_resilient(
+            ai, target_language, source_texts)
+        if failed_idx:
+            logger.warning(
+                "translate: %d/%d line(s) kept their source text after "
+                "per-line retries", len(failed_idx), len(source_texts))
+        for i, (src_seg, txt) in enumerate(zip(batch, translated)):
+            new_seg = {**src_seg, "text": txt}
+            # DROP the per-word array — Whisper's `words` are the SOURCE
+            # language's words with source-aligned timings. Keeping them makes
+            # the caption renderer prefer word-level data over `text` and burn
+            # the original words onto the video, which reads as "nothing was
+            # translated". Without them the renderer falls back to the segment
+            # text and spreads it evenly across the segment.
+            new_seg.pop("words", None)
+            if i in failed_idx:
+                new_seg["untranslated"] = True
+            out.append(new_seg)
+
+    if not out:
         raise RuntimeError("Translation produced no segments")
     return out
+
+
+async def _translate_batch_resilient(
+    ai, target_language: str, texts: list[str], attempts: int = 2,
+) -> tuple[list[str], set[int]]:
+    """`_translate_one_batch` with divide-and-conquer recovery.
+
+    Returns (translations, indexes that kept their source text). Splitting is
+    the fix for a model that merges or drops a line: halving the batch changes
+    the shape of the request, and a single-line request has essentially no way
+    to come back with the wrong count. Extra calls happen only on failure.
+    """
+    import json as _json
+    try:
+        return await _translate_one_batch(ai, target_language, texts, attempts), set()
+    except (RuntimeError, ValueError, _json.JSONDecodeError) as e:
+        if len(texts) <= 1:
+            # One line that won't translate even alone. Keeping the source text
+            # preserves every other caption's timing — dropping or padding it
+            # would slide the rest of the video out of sync.
+            logger.warning("translate: line kept untranslated (%s): %r", e, texts[:1])
+            return list(texts), {0}
+        mid = len(texts) // 2
+        logger.info("translate: batch of %d failed (%s) — retrying as %d + %d",
+                    len(texts), e, mid, len(texts) - mid)
+        # attempts=1 below: the split IS the retry (see _translate_one_batch),
+        # so re-retrying at every level would fan one bad 20-line batch out to
+        # ~60 AI calls.
+        left, lf = await _translate_batch_resilient(ai, target_language, texts[:mid], 1)
+        right, rf = await _translate_batch_resilient(ai, target_language, texts[mid:], 1)
+        return left + right, lf | {mid + i for i in rf}
+
+
+async def _translate_one_batch(
+    ai, target_language: str, texts: list[str], attempts: int = 2,
+) -> list[str]:
+    """Send one batch to the AI; parse + validate; retry once on a shape error."""
+    import json as _json
+    response = ""
+    for attempt in range(max(1, attempts)):
+        try:
+            stricter = ("\n\nIMPORTANT: respond with ONLY the JSON array. "
+                        "No code fences, no commentary, no extra text.")
+            prompt = _translation_prompt(target_language, texts)
+            response = await ai.chat(
+                messages=[{"role": "user",
+                           "content": prompt if attempt == 0 else prompt + stricter}],
+                max_tokens=2048,
+            )
+            arr = _json.loads(_strip_json_fence(response))
+            if not isinstance(arr, list):
+                raise ValueError(f"Expected list, got {type(arr).__name__}")
+            if len(arr) != len(texts):
+                raise ValueError(
+                    f"Translation count mismatch: input {len(texts)}, output {len(arr)}")
+            if not all(isinstance(x, str) for x in arr):
+                raise ValueError("Non-string in translation output")
+            return arr
+        except (_json.JSONDecodeError, ValueError) as e:
+            logger.warning(
+                "Translate batch parse failed (attempt %d/%d): %s — raw: %r",
+                attempt + 1, max(1, attempts), e, response[:200],
+            )
+            if attempt == max(1, attempts) - 1:
+                raise RuntimeError(f"Translation failed after retry: {e}")
+
+    raise RuntimeError("Translation flow ended unexpectedly")
 
 
 async def run_tool_translate(
