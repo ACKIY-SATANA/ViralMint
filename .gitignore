@@ -19,6 +19,17 @@ viralmint.db-shm
 # Storage
 storage/
 
+# The other DATA_DIR runtime dirs that land at the repo root on a plain
+# `python run.py` (no VIRALMINT_DATA_DIR set). storage/ and the db were
+# already ignored; these showed up as untracked noise the moment anyone ran
+# the app from a checkout.
+#   logs/          — rotating backend logs
+#   whisper-cache/ — HF_HOME for the faster-whisper model downloads
+#   cache/         — settings.CACHE_DIR, if configured
+/logs/
+/whisper-cache/
+/cache/
+
 # Node
 node_modules/
 frontend/dist/

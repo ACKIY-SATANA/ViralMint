@@ -34,6 +34,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Fixed
+- **Downloads use whatever JavaScript runtime the machine has.** yt-dlp was
+  handed a hardcoded `node`, and passing that option *replaces* yt-dlp's own
+  default — so a machine with deno but not Node ended up with no runtime at
+  all, and a machine with neither got no warning. Without a runtime YouTube's
+  n-signature challenges go unsolved and formats go missing or 403. Node and
+  deno are now discovered, and a machine with neither gets one clear warning
+  naming the consequence.
+- **An HTTP 403 caused by cookies is now retried without them.** Supplying any
+  cookie makes yt-dlp skip every player client that can't carry one — which are
+  exactly the token-free ones — so a 403 was retried with the same losing
+  configuration until the attempts ran out.
+- **curl-cffi floor raised to 0.15.** 0.14 resets a libcurl handle from a
+  done-callback while the calling thread is still reading it, which aborts the
+  whole backend process — no traceback, just a dead app. TikTok forces
+  impersonation, so it was reachable from every TikTok probe and download.
 - **Translating a long video no longer dies on one bad batch.** Translation
   sent every segment in a single AI call and enforced a strict 1:1 count by
   raising, so a long video overflowed the token budget and a model that merged
