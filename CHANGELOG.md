@@ -34,6 +34,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Fixed
+- **Transcription shows live progress instead of looking hung.** Whisper's
+  segment generator was consumed in one gulp, so a 40-minute audio sat at a
+  frozen 7% / 15% for the entire 15–30 minute transcription — indistinguishable
+  from a hang, and reported as one. Analyze and Clip Studio now show a real
+  percentage as the decode advances (the analyzer writes it to the DB too, so
+  the polled jobs list moves as well as the live socket). Two *long*
+  transcriptions also now queue explicitly instead of thrashing the machine
+  invisibly inside ctranslate2; short ones still run concurrently, so a caption
+  pass never waits behind a batch job.
 - **Caption style "None" really means no captions.** Clip Studio's "none" chip
   (which even greys out AutoEmoji when you pick it) was never treated as a
   sentinel backend-side: the ASS builder falls back to the "viral" preset for

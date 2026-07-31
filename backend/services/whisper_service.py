@@ -32,6 +32,23 @@ WHISPER_MODEL_SIZES = {
 _HEAVY_MODELS = {"medium", "large-v3"}
 _IDLE_EVICT_SECONDS = 600  # 10 min
 
+# Min seconds between on_progress emissions during a streaming transcription.
+# Module-level so tests can shrink it instead of monkeypatching time.monotonic
+# (which asyncio's event loop also uses — patching it breaks loop timing).
+_PROGRESS_EMIT_INTERVAL = 3.0
+
+# Only transcriptions of audio AT LEAST this long take the serialization gate.
+# The gate exists to stop two BATCH transcriptions (analyze + clip extraction
+# on 30-minute-plus audio) from thrashing the machine. Short interactive
+# transcriptions must NEVER wait on it — Smart Video and the caption tools
+# align captions on ~1-minute TTS output mid-pipeline, and head-of-line
+# blocking those behind a 30-minute batch job would stall them for tens of
+# minutes. Short jobs run concurrently exactly as before the gate existed:
+# they interleave inside ctranslate2 at generation-window granularity and
+# finish fast. Unknown duration (ffprobe failed) counts as short — the safe
+# default is the old concurrent behaviour.
+_SERIALIZE_MIN_SECONDS = 120.0
+
 
 class WhisperService:
     _model = None
@@ -39,6 +56,15 @@ class WhisperService:
     _lock = threading.Lock()
     _last_used = 0.0
     _evict_task = None
+    # Serializes the transcription COMPUTE (not the model load) for long
+    # audio. The model is created with ctranslate2's default num_workers=1,
+    # so two concurrent transcribe() calls never truly ran in parallel
+    # anyway — they queued invisibly inside the library while BOTH calling
+    # threads burned CPU on audio decode + word-timestamp assembly,
+    # saturating the machine. An explicit gate makes the queueing observable
+    # and keeps the waiting job's decode work from starting until it can
+    # actually run.
+    _transcribe_gate = threading.Lock()
 
     @classmethod
     def _hub_dir(cls) -> Path:
@@ -144,6 +170,7 @@ class WhisperService:
         language: str = None,
         quality: str = "balanced",
         timing_only: bool = False,
+        on_progress=None,
     ) -> dict:
         """
         Transcribe audio file. Returns:
@@ -162,6 +189,15 @@ class WhisperService:
         audio (e.g. our own TTS output) rather than a publishable transcript —
         it is substantially faster on CPU for a negligible accuracy cost on that
         kind of input. Leave it False for anything the user will read.
+
+        `on_progress(fraction)` (optional, sync, 0.0–0.99) fires from the
+        worker thread as segments stream out of the decoder, throttled to one
+        call every ~3 s. Callers bridging to async progress emitters should use
+        `asyncio.run_coroutine_threadsafe` with a loop captured BEFORE the call
+        (same pattern as yt-dlp's progress hook). Transcription used to consume
+        the whole segment generator in one gulp, so a 40-minute audio showed a
+        frozen progress bar for the entire 15–30 minute transcription — which
+        is indistinguishable from a hung job.
         """
         # Pre-check: confirm the file actually has an audio stream before
         # invoking whisper. Without this, faster-whisper crashes with a
@@ -174,15 +210,57 @@ class WhisperService:
 
         model = self.load(quality)
 
+        # Duration serves two decisions: the progress fraction denominator AND
+        # whether this transcription is long enough to take the batch gate.
+        # ~50 ms of ffprobe next to a transcription that runs seconds to tens
+        # of minutes.
+        from backend.services.video_utils import probe_duration
+        total_duration = await asyncio.to_thread(probe_duration, Path(audio_path))
+
         def _run():
-            segments_gen, info = model.transcribe(
-                str(audio_path),
-                beam_size=1 if timing_only else 5,
-                vad_filter=timing_only,
-                language=language,
-                word_timestamps=True,
-            )
-            segments = list(segments_gen)
+            # Gate only BATCH-length audio (see _SERIALIZE_MIN_SECONDS —
+            # short/interactive transcriptions must never queue here).
+            gate = (type(self)._transcribe_gate
+                    if total_duration >= _SERIALIZE_MIN_SECONDS else None)
+            if gate is not None and not gate.acquire(blocking=False):
+                logger.info(
+                    "Whisper busy — %s (%.0fs) waits for the active batch "
+                    "transcription to finish",
+                    Path(audio_path).name, total_duration,
+                )
+                gate.acquire()
+            try:
+                segments_gen, info = model.transcribe(
+                    str(audio_path),
+                    beam_size=1 if timing_only else 5,
+                    vad_filter=timing_only,
+                    language=language,
+                    word_timestamps=True,
+                )
+                # Stream the generator instead of list()-ing it so progress can
+                # be reported as the decode advances through the audio.
+                segments = []
+                last_emit = 0.0
+                best_fraction = 0.0
+                for s in segments_gen:
+                    segments.append(s)
+                    if on_progress is not None and total_duration > 0:
+                        now = time.monotonic()
+                        if now - last_emit >= _PROGRESS_EMIT_INTERVAL:
+                            # Monotonic guard: a segment with end=None maps to
+                            # fraction 0.0 — emitting it would walk the bar
+                            # backwards mid-transcription.
+                            fraction = min(0.99, float(s.end or 0.0) / total_duration)
+                            if fraction > best_fraction:
+                                best_fraction = fraction
+                                last_emit = now
+                                try:
+                                    on_progress(fraction)
+                                except Exception:
+                                    pass  # progress UI must never break transcription
+            finally:
+                if gate is not None:
+                    gate.release()
             text = " ".join([s.text.strip() for s in segments])
             return {
                 "text": text,

@@ -587,8 +587,22 @@ class AnalyzerAgent:
             await asyncio.to_thread(whisper_service.load, whisper_quality)
             await ws_manager.send_progress(job_id, 15, "Transcribing audio...", user_id)
             await update_job_status(job_id, "running", progress_pct=15, current_step="Transcribing audio...")
+            # Live transcription progress (15→38% of the job) — whisper streams
+            # a fraction per decoded segment; bridge the worker-thread callback
+            # onto the loop. DB write included so the /api/jobs poll path sees
+            # movement too, not just live WS clients.
+            _loop = asyncio.get_running_loop()
+
+            def _tx_progress(frac):
+                pct = 15 + frac * 23
+                step = f"Transcribing audio — {int(frac * 100)}%"
+                asyncio.run_coroutine_threadsafe(
+                    ws_manager.send_progress(job_id, pct, step, user_id), _loop)
+                asyncio.run_coroutine_threadsafe(
+                    update_job_status(job_id, "running", progress_pct=pct, current_step=step), _loop)
+
             transcript_data = await whisper_service.transcribe(
-                audio_path, quality=whisper_quality)
+                audio_path, quality=whisper_quality, on_progress=_tx_progress)
 
             await ws_manager.send_progress(job_id, 40, "Correcting transcript...", user_id)
 

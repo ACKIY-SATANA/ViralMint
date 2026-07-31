@@ -984,8 +984,25 @@ async def _load_or_transcribe_segments(video, user_settings, whisper_quality: st
 
     try:
         await asyncio.to_thread(whisper_service.load, whisper_quality)
+        # Live transcription progress (7→30% of the job): whisper streams a
+        # fraction as the decode advances; bridge the worker-thread callback
+        # onto the loop. Without this a 40-minute audio sat at a frozen 7% for
+        # the entire transcription and read as a hung job.
+        _tx_progress = None
+        if job_id:
+            loop = asyncio.get_running_loop()
+
+            def _tx_progress(frac):
+                asyncio.run_coroutine_threadsafe(
+                    ws_manager.send_progress(
+                        job_id, 7 + frac * 23,
+                        f"Transcribing {duration_min}min audio — {int(frac * 100)}%",
+                        user_id,
+                    ),
+                    loop,
+                )
         transcript_data = await whisper_service.transcribe(
-            audio_path, quality=whisper_quality)
+            audio_path, quality=whisper_quality, on_progress=_tx_progress)
     except Exception as e:
         # Whisper crashed (corrupt audio, OOM, model load failure, etc.) — re-raise
         # so the job fails LOUDLY instead of silently downgrading to duration-based
