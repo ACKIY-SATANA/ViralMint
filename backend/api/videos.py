@@ -20,43 +20,84 @@ router = APIRouter()
 @router.get("/videos")
 async def list_videos(
     status: str = Query(None),
+    source_type: str = Query(None),
     limit: int = Query(20, le=100),
     offset: int = Query(0),
     db: AsyncSession = Depends(get_db),
 ):
-    """List generated videos with optional status filter."""
-    query = select(GeneratedVideo).order_by(GeneratedVideo.created_at.desc())
+    """List generated videos with optional status / source_type filters.
+
+    `source_type` filters server-side (e.g. "clip_extraction" for Clip
+    Studio). Clip Studio used to pull an unfiltered page of 100 and filter in
+    the browser, so a library with enough recent non-clip rows rendered
+    "No clips yet" over a library full of clips.
+    """
+    base_query = select(GeneratedVideo).order_by(GeneratedVideo.created_at.desc())
     if status:
-        query = query.where(GeneratedVideo.status == status)
-    query = query.offset(offset).limit(limit)
+        base_query = base_query.where(GeneratedVideo.status == status)
+    if source_type:
+        base_query = base_query.where(GeneratedVideo.source_type == source_type)
 
-    result = await db.execute(query)
-    videos = result.scalars().all()
-
-    # Self-heal: prune rows whose rendered file is gone. Only rows that HAD a
-    # file (video_path set) but it's now missing on disk — a draft/failed row
-    # with no path yet is legitimately file-less and left alone. Local is_file()
-    # is authoritative so this is safe; it stops broken/dead tiles from
-    # lingering in the Library forever. Committed before the count below so
-    # `total` reflects the pruned set.
-    live = []
+    # Self-heal + BACKFILL: prune rows whose rendered file is gone, then
+    # re-query so the caller still gets a full page.
+    #
+    # Only rows that HAD a file (video_path set) but it's now missing on disk —
+    # a draft/failed row with no path yet is legitimately file-less and left
+    # alone. Local is_file() is authoritative so the delete is safe; it stops
+    # broken/dead tiles from lingering in the Library forever.
+    #
+    # Why the loop: pruning used to happen *within* the fetched page and the
+    # page was returned short. With enough stale rows the whole page could be
+    # pruned, so a limit-3 request answered `videos: []` next to `total: 431` —
+    # which reads as a bug to any caller and gives it no way forward. Deleting
+    # rows inside [offset, offset+limit) shifts later rows INTO that window, so
+    # re-running the same offset/limit query is the correct backfill.
+    live: list = []
     pruned = 0
-    for v in videos:
-        if v.video_path and not Path(v.video_path).is_file():
-            try:
-                for ps in (v.video_path, v.audio_path, v.thumbnail_path, v.video_path_landscape):
-                    if ps:
-                        pp = Path(ps)
-                        if pp.exists():
-                            pp.unlink(missing_ok=True)
-                await db.delete(v)
-                pruned += 1
-                continue
-            except Exception:
-                logger.warning("Could not prune orphaned video row %s", v.id)
-        live.append(v)
+    passes = 0
+    _MAX_PASSES = 5  # bounds the work when a whole tail of rows is orphaned
+    while True:
+        passes += 1
+        # Rows already kept occupy [offset, offset + len(live)) in the CURRENT
+        # (post-delete) ordering, because deletions were all inside the window
+        # and rows before `offset` are untouched. So the next slice starts
+        # after them — re-using the original `offset` on a later pass would
+        # re-fetch what `live` already holds and duplicate it in the response.
+        result = await db.execute(
+            base_query.offset(offset + len(live)).limit(limit - len(live)))
+        page = result.scalars().all()
+        if not page:
+            break
+        pruned_this_pass = 0
+        for v in page:
+            if v.video_path and not Path(v.video_path).is_file():
+                try:
+                    for ps in (v.video_path, v.audio_path,
+                               v.thumbnail_path, v.video_path_landscape):
+                        if ps:
+                            pp = Path(ps)
+                            if pp.exists():
+                                pp.unlink(missing_ok=True)
+                    await db.delete(v)
+                    pruned += 1
+                    pruned_this_pass += 1
+                    continue
+                except Exception:
+                    logger.warning("Could not prune orphaned video row %s", v.id)
+            live.append(v)
+        if pruned_this_pass:
+            # Commit so the next pass's OFFSET sees the shrunk table (and so
+            # `total` below reflects the pruned set).
+            await db.commit()
+        if len(live) >= limit or not pruned_this_pass:
+            break
+        if passes >= _MAX_PASSES:
+            logger.warning(
+                "Videos: stopped backfilling after %d passes (%d pruned, page "
+                "has %d/%d) — many orphaned rows in this range",
+                passes, pruned, len(live), limit)
+            break
     if pruned:
-        await db.commit()
         logger.info("Videos: pruned %d orphaned row(s) with missing files", pruned)
     videos = live
 
@@ -64,6 +105,8 @@ async def list_videos(
     count_query = select(func.count(GeneratedVideo.id))
     if status:
         count_query = count_query.where(GeneratedVideo.status == status)
+    if source_type:
+        count_query = count_query.where(GeneratedVideo.source_type == source_type)
     total = (await db.execute(count_query)).scalar()
 
     return {
@@ -349,17 +392,21 @@ async def stream_video(video_id: str, db: AsyncSession = Depends(get_db)):
 async def export_video(video_id: str, body: dict = None, db: AsyncSession = Depends(get_db)):
     """
     Export a generated video to a different aspect ratio.
-    Body: { "target_aspect": "16:9", "method": "blur_fill" }
+    Body: { "target_aspect": "16:9", "method": "auto" }
     Supported aspects: 9:16, 16:9, 1:1, 4:5
-    Methods: letterbox, crop, blur_fill
+    Methods: auto, letterbox, crop, blur_fill
     """
     body = body or {}
     target_aspect = body.get("target_aspect", "16:9")
-    method = body.get("method", "blur_fill")
+    # "auto" picks crop when WIDENING and blur_fill when narrowing —
+    # fitting a 9:16 short inside 16:9 left the content a narrow strip at a
+    # third of the frame (see ffmpeg_service.pick_reframe_method). An
+    # explicit method from the caller still wins.
+    method = body.get("method", "auto")
 
     if target_aspect not in ("9:16", "16:9", "1:1", "4:5"):
         raise HTTPException(status_code=400, detail=f"Unsupported aspect ratio: {target_aspect}")
-    if method not in ("letterbox", "crop", "blur_fill"):
+    if method not in ("auto", "letterbox", "crop", "blur_fill"):
         raise HTTPException(status_code=400, detail=f"Unsupported method: {method}")
 
     result = await db.execute(
@@ -378,9 +425,22 @@ async def export_video(video_id: str, body: dict = None, db: AsyncSession = Depe
         return FileResponse(source_path, media_type="video/mp4",
                             filename=f"{video.title or 'video'}_{target_aspect.replace(':', 'x')}.mp4")
 
+    # Reuse a cached landscape export if one is already on disk
+    if target_aspect == "16:9" and video.video_path_landscape:
+        cached = _safe_resolve_path(video.video_path_landscape)
+        if cached.exists():
+            return FileResponse(cached, media_type="video/mp4",
+                                filename=f"{video.title or 'video'}_16x9.mp4")
+
     from backend.services.ffmpeg_service import convert_aspect_ratio
     try:
         output_path = await convert_aspect_ratio(source_path, target_aspect=target_aspect, method=method)
+        # Cache the landscape export so stream_video_format can serve it
+        # without re-converting (this is what the duplicate, always-shadowed
+        # export_video_format route used to do before it was removed).
+        if target_aspect == "16:9":
+            video.video_path_landscape = str(output_path)
+            await db.commit()
         return FileResponse(output_path, media_type="video/mp4",
                             filename=f"{video.title or 'video'}_{target_aspect.replace(':', 'x')}.mp4")
     except Exception as e:
@@ -434,52 +494,12 @@ async def get_thumbnail(video_id: str, db: AsyncSession = Depends(get_db)):
     return FileResponse(path, media_type="image/jpeg")
 
 
-@router.post("/videos/{video_id}/export")
-async def export_video_format(video_id: str, body: dict = None, db: AsyncSession = Depends(get_db)):
-    """
-    Export a generated video in a different aspect ratio.
-    Body: { "target_aspect": "16:9", "method": "letterbox" }
-    method: "letterbox" (black bars) | "crop" (center crop) | "blur_fill" (blurred bg)
-    Returns: { "path": "...", "aspect": "16:9" }
-    """
-    body = body or {}
-    target_aspect = body.get("target_aspect", "16:9")
-    method = body.get("method", "letterbox")
-
-    if target_aspect not in ("16:9", "9:16"):
-        raise HTTPException(status_code=400, detail="target_aspect must be '16:9' or '9:16'")
-    if method not in ("letterbox", "crop", "blur_fill"):
-        raise HTTPException(status_code=400, detail="method must be 'letterbox', 'crop', or 'blur_fill'")
-
-    result = await db.execute(
-        select(GeneratedVideo).where(GeneratedVideo.id == video_id)
-    )
-    video = result.scalar_one_or_none()
-    if not video or not video.video_path:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    source = _safe_resolve_path(video.video_path)
-    if not source.exists():
-        raise HTTPException(status_code=404, detail="Video file not found on disk")
-
-    from backend.services.ffmpeg_service import convert_aspect_ratio
-
-    exported_path = await convert_aspect_ratio(
-        video_path=source,
-        target_aspect=target_aspect,
-        method=method,
-    )
-
-    # Save the landscape path to DB
-    if target_aspect == "16:9":
-        video.video_path_landscape = str(exported_path)
-        await db.commit()
-
-    return {
-        "path": str(exported_path),
-        "aspect": target_aspect,
-        "method": method,
-    }
+# NOTE: a second `@router.post("/videos/{video_id}/export")` handler
+# (`export_video_format`, returning a JSON path instead of the file) used to
+# live here. FastAPI matches the FIRST registered route, so it was dead code
+# from the day it was added — every request went to `export_video` above. Its
+# one useful behaviour, caching the 16:9 render into `video_path_landscape`,
+# now lives there. Do not re-add a duplicate path.
 
 
 @router.get("/videos/{video_id}/stream/{aspect}")

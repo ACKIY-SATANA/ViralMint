@@ -984,8 +984,25 @@ async def _load_or_transcribe_segments(video, user_settings, whisper_quality: st
 
     try:
         await asyncio.to_thread(whisper_service.load, whisper_quality)
+        # Live transcription progress (7→30% of the job): whisper streams a
+        # fraction as the decode advances; bridge the worker-thread callback
+        # onto the loop. Without this a 40-minute audio sat at a frozen 7% for
+        # the entire transcription and read as a hung job.
+        _tx_progress = None
+        if job_id:
+            loop = asyncio.get_running_loop()
+
+            def _tx_progress(frac):
+                asyncio.run_coroutine_threadsafe(
+                    ws_manager.send_progress(
+                        job_id, 7 + frac * 23,
+                        f"Transcribing {duration_min}min audio — {int(frac * 100)}%",
+                        user_id,
+                    ),
+                    loop,
+                )
         transcript_data = await whisper_service.transcribe(
-            audio_path, quality=whisper_quality)
+            audio_path, quality=whisper_quality, on_progress=_tx_progress)
     except Exception as e:
         # Whisper crashed (corrupt audio, OOM, model load failure, etc.) — re-raise
         # so the job fails LOUDLY instead of silently downgrading to duration-based
@@ -1741,9 +1758,18 @@ async def _process_clips_parallel(
     else:
         cleaned_segments_list = None  # signals to use normal segment filtering
 
-    # Phase 2: Burn captions in parallel (on successfully extracted clips)
+    # Phase 2: Burn captions in parallel (on successfully extracted clips).
+    # `_burn_clip_captions` is still called per-clip when captions are off —
+    # it no-ops to "skipped" — so the extract_failed propagation below stays
+    # in one place. Only the progress copy branches.
     if job_id:
-        await ws_manager.send_progress(job_id, 55, f"Adding captions to {total} clips...", user_id)
+        from backend.services.caption_service import captions_disabled
+        await ws_manager.send_progress(
+            job_id, 55,
+            f"Skipping captions for {total} clips..." if captions_disabled(caption_style)
+            else f"Adding captions to {total} clips...",
+            user_id,
+        )
 
     hook_enabled = bool(getattr(user_settings, "hook_overlay_enabled", True))
 
@@ -1769,6 +1795,27 @@ async def _process_clips_parallel(
     if job_id:
         await ws_manager.send_progress(job_id, 75, f"Generating thumbnails and metadata...", user_id)
 
+    # Measure each finished clip ONCE. The request is not the file: extraction
+    # only reframes a LANDSCAPE source, so a square / 4:5 source keeps its own
+    # shape, and remove_silence cuts content out so the window overstates the
+    # length. One probe feeds the persisted aspect, the persisted duration and
+    # the thumbnail timestamp (which could otherwise land past the end of a
+    # heavily-trimmed clip).
+    from backend.services.video_utils import probe_media, aspect_from_dims
+
+    async def _probe_one(cap_result):
+        if isinstance(cap_result, Exception):
+            return None
+        path, _status = cap_result
+        if not isinstance(path, Path):
+            return None
+        w, h, dur = await asyncio.to_thread(probe_media, path)
+        return {"aspect": aspect_from_dims(w, h), "duration": dur}
+
+    clip_probes = await asyncio.gather(
+        *[_probe_one(cr) for cr in caption_results], return_exceptions=True,
+    )
+
     results = []
     thumb_tasks = []
     meta_inputs: list[tuple[str, str]] = []  # (title, transcript_text) per kept clip
@@ -1776,6 +1823,15 @@ async def _process_clips_parallel(
     for i, (cap_result, window) in enumerate(zip(caption_results, clip_windows)):
         if isinstance(cap_result, Exception):
             logger.error(f"Clip {i+1} processing failed: {cap_result}")
+            # The clip was already cut before the caption stage blew up.
+            # Nothing references that file once we drop the clip, so delete
+            # it instead of orphaning it in the generated dir.
+            orphan = clip_paths[i] if i < len(clip_paths) else None
+            if isinstance(orphan, Path):
+                try:
+                    orphan.unlink(missing_ok=True)
+                except Exception:
+                    pass
             continue
 
         captioned_path, caption_status = cap_result
@@ -1792,8 +1848,14 @@ async def _process_clips_parallel(
             continue
         clip_segments = _filter_and_offset_segments(segments, window["start"], window["end"])
 
-        # Adaptive thumbnail timestamp (30% through clip, max 5s)
-        clip_dur = window["end"] - window["start"]
+        probe = clip_probes[i] if i < len(clip_probes) else None
+        if isinstance(probe, Exception) or not isinstance(probe, dict):
+            probe = None
+
+        # Adaptive thumbnail timestamp (30% through clip, max 5s). Measured
+        # duration when we have it: a 15s window that remove_silence trimmed
+        # to 4s would otherwise ask for a frame at 4.5s, past the end.
+        clip_dur = (probe or {}).get("duration") or (window["end"] - window["start"])
         thumb_ts = min(clip_dur * 0.3, 5.0)
         thumb_tasks.append(_ffmpeg_limited(extract_thumbnail(captioned_path, timestamp=thumb_ts)))
 
@@ -1804,6 +1866,7 @@ async def _process_clips_parallel(
             "_index": i,
             "captioned_path": captioned_path,
             "caption_status": caption_status,
+            "probe": probe,
             "window": window,
             "clip_segments": clip_segments,
             "raw_clip_path": clip_paths[i] if not isinstance(clip_paths[i], Exception) else None,
@@ -1878,6 +1941,13 @@ async def _process_clips_parallel(
             except Exception:
                 pass
 
+        # Measured in the probe phase above — the FILE's real shape and
+        # length, not the requested window's. Falls back to the window when
+        # the probe failed, which is the historical behaviour.
+        probe = r.get("probe") or {}
+        probed_duration = probe.get("duration") or 0.0
+        probed_aspect = probe.get("aspect")
+
         final_results.append({
             "video_path": captioned_path,
             "thumbnail_path": thumb_path,
@@ -1889,12 +1959,21 @@ async def _process_clips_parallel(
             "reason": window.get("reason", ""),
             "start": window["start"],
             "end": window["end"],
-            "duration_seconds": int(window["end"] - window["start"]),
+            "duration_seconds": (
+                int(round(probed_duration)) if probed_duration > 0
+                else int(window["end"] - window["start"])
+            ),
+            "aspect_ratio": probed_aspect,
             "virality_score": window.get("virality_score", 5.0),
             "score_breakdown": window.get("score_breakdown") or {},
             "caption_status": caption_status,
             "metadata_status": metadata_status,
-            **metadata,
+            # Whitelisted LAST-position spread: `metadata` is model output, and
+            # an unfiltered `**metadata` let any stray key the model invented
+            # (video_path, start/end, duration_seconds, caption_status)
+            # overwrite the pipeline's own value. _metadata_only keeps the four
+            # fields we asked for and drops the rest.
+            **_metadata_only(metadata),
         })
 
     return final_results
@@ -1936,11 +2015,52 @@ MIN_KEEP_DURATION = 0.15
 # Padding around kept segments to avoid harsh cuts
 KEEP_PAD_SECONDS = 0.03
 
+# The select/aselect pass re-encodes the WHOLE timeline, so its runtime scales
+# with the source, not with how much gets cut. A flat 120 s cap was fine while
+# this only ever saw 30-60 s clipper clips; the Silence Remover TOOL feeds it
+# whole videos and podcasts, where the cap fired as a raw TimeoutExpired
+# carrying the entire ffmpeg argv into the UI. Budget ~6x realtime —
+# comfortably slower than any machine we support — with a floor for short clips
+# and a 30 min ceiling so a pathological input can't pin a worker forever.
+SILENCE_TIMEOUT_FLOOR_S = 300
+SILENCE_TIMEOUT_CEILING_S = 1800
+SILENCE_TIMEOUT_REALTIME_FACTOR = 6
+
+
+def _silence_removal_timeout(duration_s: float) -> int:
+    """ffmpeg wall-clock budget for a select/aselect pass over `duration_s`."""
+    budget = float(duration_s or 0) * SILENCE_TIMEOUT_REALTIME_FACTOR
+    return int(min(max(budget, SILENCE_TIMEOUT_FLOOR_S), SILENCE_TIMEOUT_CEILING_S))
+
+
+def _has_video_stream(path: Path) -> bool:
+    """True when the file carries a video stream (False for a bare mp3/wav).
+
+    Conservative on probe failure: assume video, since that is what every
+    caller but the audio-input tool path passes.
+    """
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "v",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode != 0:
+            return True
+        return "video" in (r.stdout or "")
+    except Exception:
+        return True
+
 
 async def _remove_silence_and_fillers(clip_path: Path, segments: list[dict]) -> tuple[Path, list[dict]]:
     """
     Remove silent gaps and filler words from a clip using FFmpeg select/aselect filters.
     Returns (new_clip_path, adjusted_segments) with re-timed word timestamps.
+
+    Works on video OR on a bare audio file (the Silence Remover tool accepts
+    podcasts): audio-only inputs skip the video half of the filtergraph and
+    come back as mp3.
 
     Self-contained: shells out to ffmpeg directly (argv list, never shell=True),
     no external service dependency.
@@ -2028,21 +2148,48 @@ async def _remove_silence_and_fillers(clip_path: Path, segments: list[dict]) -> 
     select_parts = [f"between(t\\,{s:.3f}\\,{e:.3f})" for s, e in keep_ranges]
     select_expr = "+".join(select_parts)
 
-    output_path = clip_path.parent / f"{clip_path.stem}_cleaned{clip_path.suffix}"
+    has_video = await asyncio.to_thread(_has_video_stream, clip_path)
+    # Output container is chosen by what we ENCODE, not by what came in: a
+    # .webm input re-encoded to H.264 is rejected by the WebM muxer ("only
+    # VP8/VP9/AV1 ... are supported"), which failed the whole run.
+    out_suffix = ".mp4" if has_video else ".mp3"
+    output_path = clip_path.parent / f"{clip_path.stem}_cleaned{out_suffix}"
+    # Budget against the SOURCE length, not the last word: ffmpeg decodes the
+    # whole timeline even though `select` only encodes the kept ranges, so a
+    # 60-minute recording whose speech stops at minute two still costs 60
+    # minutes of decode. `original_duration` (last word end) would size that
+    # run at the floor and time it out.
+    from backend.services.video_utils import probe_duration
+    source_duration = await asyncio.to_thread(probe_duration, clip_path, 0.0)
+    timeout_s = _silence_removal_timeout(max(original_duration, source_duration))
 
     def _run():
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(clip_path),
-            "-vf", f"select='{select_expr}',setpts=N/FRAME_RATE/TB",
-            "-af", f"aselect='{select_expr}',asetpts=N/SR/TB",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart",
-            str(output_path),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        cmd = ["ffmpeg", "-y", "-i", str(clip_path)]
+        if has_video:
+            cmd += [
+                "-vf", f"select='{select_expr}',setpts=N/FRAME_RATE/TB",
+                "-af", f"aselect='{select_expr}',asetpts=N/SR/TB",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+            ]
+        else:
+            cmd += [
+                "-af", f"aselect='{select_expr}',asetpts=N/SR/TB",
+                "-c:a", "libmp3lame", "-q:a", "2",
+            ]
+        cmd.append(str(output_path))
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        except subprocess.TimeoutExpired as e:
+            # The default repr embeds the whole argv (absolute paths, filter
+            # graph) and reaches the user verbatim via _tool_fail.
+            raise RuntimeError(
+                f"Silence removal timed out after {timeout_s // 60} min on a "
+                f"{max(original_duration, source_duration) / 60:.0f} min source. "
+                f"Trim it into shorter pieces and run them separately."
+            ) from e
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg silence removal failed: {result.stderr[-500:]}")
 
@@ -2122,7 +2269,20 @@ async def _burn_clip_captions(
 
     `emoji_style` ("none" / "minimal" / "moderate" / "heavy") controls
     AutoEmoji density. Default "moderate" matches the historical behavior.
+
+    A `style` of "none" (see caption_service.CAPTIONS_OFF) means the user
+    asked for NO burned-in text — we return the clip untouched with status
+    "skipped". This check has to live here, before generate_captions_ass,
+    because that function falls back to the "viral" preset for any style
+    name it doesn't recognise, so "none" used to burn viral subs onto every
+    clip. The hook overlay rides the same ASS file, so it's skipped too —
+    "none" means no burned text of any kind.
     """
+    from backend.services.caption_service import captions_disabled
+
+    if captions_disabled(style):
+        return clip_path, "skipped"
+
     # Silent clips with no hook have nothing to burn.
     if not segments and not hook_text:
         return clip_path, "no_segments"
@@ -2181,6 +2341,27 @@ async def _burn_clip_captions(
     except Exception as e:
         logger.warning(f"Caption burning failed for clip {clip_path.name}: {e}")
         return clip_path, "failed"
+
+
+# The only keys the metadata prompts ask for, and the only ones any consumer
+# reads (see run_extract_clips' GeneratedVideo(...) construction).
+_METADATA_KEYS = ("youtube_title", "youtube_description", "youtube_tags", "tiktok_title")
+
+
+def _metadata_only(metadata) -> dict:
+    """Keep just the four metadata fields; drop anything else the model added.
+
+    The clip result dict is assembled with the metadata spread LAST, so an
+    unfiltered merge let a hallucinated key silently overwrite a
+    pipeline-owned field — `video_path` (what we persist and serve),
+    `start`/`end`/`duration_seconds`, or `caption_status`. Filtering at the
+    point where model output joins our own dict is the one choke point that
+    covers every metadata path (batched, per-clip fallback, and
+    `_default_metadata`).
+    """
+    if not isinstance(metadata, dict):
+        return {}
+    return {k: metadata[k] for k in _METADATA_KEYS if k in metadata}
 
 
 def _default_metadata(title: str, transcript_text: str) -> dict:

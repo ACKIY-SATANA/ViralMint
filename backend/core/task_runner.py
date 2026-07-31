@@ -898,7 +898,12 @@ async def run_extract_clips(
                     title=_clip_title(clip, idx),
                     video_path=str(clip["video_path"]) if clip.get("video_path") else None,
                     thumbnail_path=str(clip["thumbnail_path"]) if clip.get("thumbnail_path") else None,
-                    aspect_ratio="9:16",
+                    # Probed from the finished file by the extractor, NOT
+                    # assumed: extraction only reframes a landscape source, so
+                    # a square / 4:5 source keeps its own shape and used to be
+                    # persisted as "9:16" — which is what the Library sizes the
+                    # tile from and what the aspect filter chips match on.
+                    aspect_ratio=clip.get("aspect_ratio") or "9:16",
                     duration_seconds=clip.get("duration_seconds"),
                     gen_tier="clip_extraction",
                     source_type="clip_extraction",

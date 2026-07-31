@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from backend.database import AsyncSessionLocal
 from backend.models.downloaded_video import DownloadedVideo
-from backend.models.generated_video import GeneratedVideo
+from backend.models.generated_video import GeneratedVideo, NICHE_MAX_CHARS
 from backend.models.scout_result import ScoutResult
 from backend.models.user_settings import UserSettings
 from backend.core.ai_provider import get_ai_client
@@ -196,13 +196,20 @@ class GeneratorAgent:
             metadata = {"youtube": {}, "tiktok": {}}
             try:
                 await ws_manager.send_progress(job_id, 85, "Generating metadata...", user_id)
-                niche = (safe_json_loads(source.insights_json, {}, logger).get("topic_angle", "") if source and source.insights_json else "")
-                metadata = await self._generate_metadata(script, niche, user_settings)
+                # `topic_angle` is PROSE by design — the analyzer prompt asks
+                # "what makes this specific angle work", so it comes back as a
+                # full sentence. Good context for the metadata prompt...
+                angle = (safe_json_loads(source.insights_json, {}, logger).get("topic_angle", "") if source and source.insights_json else "")
+                metadata = await self._generate_metadata(script, angle, user_settings)
                 if not metadata or not isinstance(metadata, dict):
                     metadata = {"youtube": {}, "tiktok": {}}
             except Exception as e:
                 logger.warning(f"Metadata generation failed, using defaults: {e}")
-                niche = ""
+            # ...but it is NOT a niche. Storing it in GeneratedVideo.niche (a
+            # String(200) keyword column) put 250-450 char paragraphs in the
+            # column meant for a search phrase. Resolve a real short niche
+            # instead, or store nothing.
+            row_niche = await self._resolve_row_niche(source)
 
             # Step 9: Generate AI thumbnail (92%)
             thumb_path = None
@@ -226,7 +233,7 @@ class GeneratorAgent:
                     source_downloaded_video_id=downloaded_video_id,
                     title=metadata.get("youtube", {}).get("title", "Untitled"),
                     script=script,
-                    niche=niche,
+                    niche=row_niche,
                     video_path=str(video_path),
                     audio_path=str(voice_path) if voice_path else None,
                     thumbnail_path=str(thumb_path) if thumb_path else None,
@@ -410,6 +417,36 @@ class GeneratorAgent:
 
         logger.info(f"Script verified: {len(cleaned)} chars, first 80: {cleaned[:80]!r}")
         return cleaned
+
+    async def _resolve_row_niche(self, source) -> str | None:
+        """Resolve a SHORT niche keyword for GeneratedVideo.niche, or None.
+
+        Deliberately does NOT fall back to insights["topic_angle"] the way
+        `_get_search_demand_section` does: that field is a full sentence by
+        design, which is fine as prompt context but wrong for a keyword
+        column. Prefer a real niche, and store nothing rather than a paragraph.
+
+        Order: the source's own niche → the scout query that found it → None.
+        """
+        candidate = (getattr(source, "niche", None) or "").strip() if source else ""
+        if not candidate and source is not None and getattr(source, "scout_result_id", None):
+            try:
+                async with AsyncSessionLocal() as db:
+                    row = await db.execute(
+                        select(ScoutResult.niche).where(
+                            ScoutResult.id == source.scout_result_id)
+                    )
+                    candidate = (row.scalar_one_or_none() or "").strip()
+            except Exception:
+                logger.debug("Could not read scout niche for the generated row",
+                             exc_info=True)
+        if not candidate:
+            return None
+        if len(candidate) > NICHE_MAX_CHARS:
+            logger.info("Discarding a %d-char 'niche' — too long to be a keyword: %r",
+                        len(candidate), candidate[:80])
+            return None
+        return candidate
 
     async def _get_search_demand_section(self, source, insights: dict) -> str:
         """Fetch YouTube search demand data for the video's niche and format for prompt injection."""

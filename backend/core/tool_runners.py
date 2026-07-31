@@ -51,6 +51,38 @@ async def _probe_aspect_ratio(video_path: Path) -> str:
     return await asyncio.to_thread(_probe_aspect_ratio_sync, video_path)
 
 
+# 9:16 as a ratio, with a 2% tolerance so 1079x1920 or 1080x1918 still counts.
+_VERTICAL_RATIO = 9 / 16
+
+
+def _is_already_vertical_sync(video_path: Path) -> bool:
+    """True only when the source is 9:16 or NARROWER — i.e. nothing to crop.
+
+    The old test was "portrait" (w <= h), which made Reframe a no-op on square
+    (1080x1080) and 4:5 (1080x1350) sources: they came back byte-identical with
+    an "already vertical" notice, even though both have side content a 9:16
+    crop would remove. Only a source at or below the 9:16 ratio is genuinely
+    done. Unreadable dimensions fall back to False so the reframe still runs —
+    re-encoding a video we can't measure is cheaper than silently doing nothing.
+    """
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0", str(video_path)],
+            capture_output=True, text=True, timeout=10,
+        )
+        w, h = map(int, r.stdout.strip().split(",")[:2])
+        if not w or not h:
+            return False
+        return (w / h) <= _VERTICAL_RATIO * 1.02
+    except Exception:
+        return False
+
+
+async def _is_already_vertical(video_path: Path) -> bool:
+    return await asyncio.to_thread(_is_already_vertical_sync, video_path)
+
+
 def _cleanup_paths(*paths: Path):
     """Best-effort delete of scratch files. Never raises."""
     for p in paths:
@@ -166,10 +198,10 @@ async def run_tool_reframe(job_id: str, in_path: Path, user_id: str = "local"):
     try:
         out_path = tool_out_path(job_id, ".mp4")
 
-        # If the source is already portrait there's nothing to reframe —
-        # return it unchanged with an info constraint warning.
-        aspect = await _probe_aspect_ratio(in_path)
-        if aspect == "9:16":
+        # If the source is already 9:16 (or narrower) there's nothing to
+        # reframe — return it unchanged with an info constraint warning.
+        # NOT "portrait": square and 4:5 sources DO have side content to crop.
+        if await _is_already_vertical(in_path):
             await _tool_progress(job_id, 50, "Source already vertical...", user_id)
             await asyncio.to_thread(shutil.copy2, str(in_path), str(out_path))
             await ws_manager.send_constraint_warning(
@@ -199,26 +231,75 @@ async def run_tool_reframe(job_id: str, in_path: Path, user_id: str = "local"):
 
 async def run_tool_audio_enhance(job_id: str, in_path: Path, user_id: str = "local"):
     from backend.api.tools import tool_out_path
+    from backend.services.clip_extractor import _has_video_stream
+    from backend.services.ffmpeg_service import has_audio_stream
     logger.info("TASK START tool:audio_enhance | job=%s", job_id[:8])
     cleanup = [in_path]
     try:
+        # Nothing to enhance without an audio track — say so instead of
+        # handing ffmpeg a filtergraph it can't satisfy and surfacing its
+        # stderr as the failure reason.
+        if not await has_audio_stream(in_path):
+            await _tool_fail(
+                job_id, RuntimeError("This file has no audio track to enhance."),
+                cleanup, user_id, "audio_enhance",
+            )
+            return
+
         await _tool_progress(job_id, 20, "Denoising + normalizing audio...", user_id)
-        out_path = tool_out_path(job_id, ".mp4")
+        has_video = await asyncio.to_thread(_has_video_stream, in_path)
+        # The container follows what we ENCODE: an audio-only source (the tool
+        # accepts podcasts) has no video stream to copy, and re-encoding a
+        # .webm to H.264 is rejected outright by the WebM muxer.
+        out_path = tool_out_path(job_id, ".mp4" if has_video else ".mp3")
 
         def _enhance():
             # highpass/lowpass trim rumble + hiss; afftdn denoise; loudnorm
             # brings the track to a broadcast-style target loudness.
             af = "highpass=f=80,lowpass=f=12000,afftdn=nr=12,loudnorm=I=-16:TP=-1.5:LRA=11"
-            cmd = [
-                "ffmpeg", "-y", "-i", str(in_path),
-                "-af", af,
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                str(out_path),
-            ]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-            if res.returncode != 0:
-                raise RuntimeError(f"Audio enhance failed: {res.stderr[:400]}")
+            base = ["ffmpeg", "-y", "-i", str(in_path), "-af", af]
+            if not has_video:
+                res = subprocess.run(
+                    base + ["-c:a", "libmp3lame", "-q:a", "2", str(out_path)],
+                    capture_output=True, text=True, timeout=900,
+                )
+                if res.returncode != 0:
+                    raise RuntimeError(f"Audio enhance failed: {res.stderr[:400]}")
+                return
+            # Two passes: `-c:v copy` into .mp4 is invalid for VP8/VP9, and
+            # .webm is both an accepted extension and what most screen
+            # recorders export — that combination used to fail the job with a
+            # raw "Could not find tag for codec vp9" and leave a 0-byte stub.
+            # The re-encode pass works for any source we accept.
+            attempts = (
+                ("copy", ["-c:v", "copy"]),
+                ("re-encode", ["-c:v", "libx264", "-preset", "veryfast",
+                               "-crf", "20", "-pix_fmt", "yuv420p"]),
+            )
+            tail = ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
+                    str(out_path)]
+            last_err = ""
+            for label, vargs in attempts:
+                res = subprocess.run(base + vargs + tail,
+                                     capture_output=True, text=True, timeout=900)
+                if res.returncode == 0:
+                    return
+                last_err = res.stderr[-400:]
+                logger.warning("audio enhance (%s pass) failed: %s", label, last_err)
+                # A failed pass leaves a 0-byte/partial file behind; drop it so
+                # the next pass isn't fooled by it and a failure can't be
+                # mistaken for a result.
+                try:
+                    out_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise RuntimeError(f"Audio enhance failed: {last_err}")
         await asyncio.to_thread(_enhance)
+
+        # Never report success over a missing/empty file — the download would
+        # be 0 bytes and the job would still read "success".
+        if not out_path.exists() or out_path.stat().st_size == 0:
+            raise RuntimeError("Audio enhance produced no output")
 
         await _tool_success(job_id, out_path, cleanup, user_id)
         logger.info("TASK DONE  tool:audio_enhance | job=%s", job_id[:8])
@@ -316,15 +397,29 @@ def _parse_silences(stderr: str) -> list[tuple[float, float]]:
 async def run_tool_remove_silence(job_id: str, in_path: Path, user_id: str = "local"):
     from backend.api.tools import tool_out_path
     from backend.core.ws_manager import ws_manager
+    from backend.services.clip_extractor import (
+        _has_video_stream, _silence_removal_timeout,
+    )
     from backend.services.video_utils import probe_duration
     import shutil
 
     logger.info("TASK START tool:remove_silence | job=%s", job_id[:8])
     cleanup = [in_path]
     try:
-        out_path = tool_out_path(job_id, ".mp4")
+        has_video = await asyncio.to_thread(_has_video_stream, in_path)
+        # Audio-only sources are a first-class input here (the tool is pointed
+        # at podcasts): they have no video stream to re-encode and come back
+        # as mp3.
+        out_path = tool_out_path(job_id, ".mp4" if has_video else ".mp3")
 
         await _tool_progress(job_id, 15, "Detecting silence...", user_id)
+
+        # Both passes read the WHOLE timeline, so their runtime scales with the
+        # source. The old flat caps (600s detect / 900s cut) were sized for
+        # short clips; on a long recording they fired as a raw TimeoutExpired
+        # carrying the entire ffmpeg argv into the UI.
+        source_duration = await asyncio.to_thread(probe_duration, in_path, 0.0)
+        timeout_s = _silence_removal_timeout(source_duration)
 
         def _detect():
             cmd = [
@@ -332,7 +427,7 @@ async def run_tool_remove_silence(job_id: str, in_path: Path, user_id: str = "lo
                 "-af", "silencedetect=noise=-35dB:d=0.6",
                 "-f", "null", "-",
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
             return res.stderr
         stderr = await asyncio.to_thread(_detect)
         silences = _parse_silences(stderr)
@@ -349,14 +444,19 @@ async def run_tool_remove_silence(job_id: str, in_path: Path, user_id: str = "lo
             keep.append((cursor, duration))
 
         if not silences or not keep:
-            await asyncio.to_thread(shutil.copy2, str(in_path), str(out_path))
+            # Returned UNCHANGED, so the output keeps the SOURCE's container —
+            # naming a copied .webm/.m4a ".mp4"/".mp3" would hand the browser
+            # a content-type the bytes don't match. `out_path` above is named
+            # for what the cut pass would ENCODE; nothing is encoded here.
+            noop_path = tool_out_path(job_id, in_path.suffix.lower() or out_path.suffix)
+            await asyncio.to_thread(shutil.copy2, str(in_path), str(noop_path))
             await ws_manager.send_constraint_warning(
                 constraint="silence_noop",
                 message="No removable silence detected — returned unchanged.",
                 severity="info",
                 user_id=user_id,
             )
-            await _tool_success(job_id, out_path, cleanup, user_id)
+            await _tool_success(job_id, noop_path, cleanup, user_id)
             logger.info("TASK DONE  tool:remove_silence (noop) | job=%s", job_id[:8])
             return
 
@@ -373,20 +473,37 @@ async def run_tool_remove_silence(job_id: str, in_path: Path, user_id: str = "lo
                     f"[0:a]atrim=start={a:.3f}:end={b:.3f},asetpts=PTS-STARTPTS[a{i}];"
                 )
             n = len(keep)
-            concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(n))
-            fc = (
-                "".join(v_parts) + "".join(a_parts)
-                + f"{concat_inputs}concat=n={n}:v=1:a=1[vout][aout]"
-            )
+            if has_video:
+                concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(n))
+                fc = (
+                    "".join(v_parts) + "".join(a_parts)
+                    + f"{concat_inputs}concat=n={n}:v=1:a=1[vout][aout]"
+                )
+                codec_args = [
+                    "-map", "[vout]", "-map", "[aout]",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+                ]
+            else:
+                concat_inputs = "".join(f"[a{i}]" for i in range(n))
+                fc = ("".join(a_parts)
+                      + f"{concat_inputs}concat=n={n}:v=0:a=1[aout]")
+                codec_args = ["-map", "[aout]", "-c:a", "libmp3lame", "-q:a", "2"]
             cmd = [
                 "ffmpeg", "-y", "-i", str(in_path),
-                "-filter_complex", fc,
-                "-map", "[vout]", "-map", "[aout]",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+                "-filter_complex", fc, *codec_args,
                 str(out_path),
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+            except subprocess.TimeoutExpired as e:
+                # The default repr embeds the whole argv (absolute paths, the
+                # entire filtergraph) and reaches the user verbatim.
+                raise RuntimeError(
+                    f"Silence removal timed out after {timeout_s // 60} min on a "
+                    f"{source_duration / 60:.0f} min source. Trim it into shorter "
+                    f"pieces and run them separately."
+                ) from e
             if res.returncode != 0:
                 raise RuntimeError(f"Silence cut failed: {res.stderr[:400]}")
         await asyncio.to_thread(_cut)
@@ -503,48 +620,159 @@ async def run_tool_merge_clips(
 
 # ── Translate (captions + optional Edge-TTS dub) ───────────────────────────
 
-_TRANSLATE_PROMPT = """Translate the following subtitle segments into {language}.
+_TRANSLATE_BATCH_SIZE = 20
 
-Return STRICT JSON only — no markdown fences — as a list with one entry per
-input segment, preserving order:
-{{"segments": [{{"start": <float>, "end": <float>, "text": "<translated text>"}}]}}
 
-Keep the timing values exactly as given. Translate only the text. Keep each
-translation concise enough to read in the same time window.
+def _translation_prompt(target_language: str, texts: list[str]) -> str:
+    """Build the per-batch translation prompt. Strict 1:1 contract: the output
+    array must have exactly the same length as the input."""
+    indexed = "\n".join(f"  [{i}] {t!r}" for i, t in enumerate(texts))
+    return f"""You translate video captions. Translate each line below into natural, conversational {target_language}. Preserve meaning — do NOT shorten, expand, or reorder lines.
 
-INPUT SEGMENTS (JSON):
-{segments_json}"""
+Source lines (each line is one caption segment):
+{indexed}
+
+Respond with ONLY a JSON array of strings, one per line, in the same order. The array MUST have exactly {len(texts)} elements — same as input.
+
+Example shape:
+["translated line 0", "translated line 1", ...]
+
+Respond with the JSON array only — no markdown, no commentary."""
 
 
 async def _translate_segments(segments: list[dict], target_language: str, user_settings) -> list[dict]:
     """AI-translate Whisper segments into the target language. Returns segments
-    with the same start/end timing and translated `text`."""
-    import json as _json
+    with the same start/end timing and translated `text`.
+
+    Batches in groups of _TRANSLATE_BATCH_SIZE — one AI call per batch. This
+    used to be a SINGLE call carrying every segment, which meant a long video
+    either blew the token budget or came back as truncated JSON, and either way
+    the whole job died after the Whisper pass had already run.
+
+    The 1:1 contract is real — a translation list shorter than its input slides
+    every later caption onto the wrong timestamp — but enforcing it by raising
+    is too brittle: one batch coming back 19-for-20 throws away everything
+    translated so far. A short batch is split and retried in halves down to
+    single lines, where the count can't be wrong; only a line that fails even
+    alone keeps its source text, marked `untranslated`.
+    """
     from backend.core.ai_provider import get_ai_client
 
     compact = [
-        {"start": float(s.get("start", 0)), "end": float(s.get("end", 0)), "text": (s.get("text") or "").strip()}
+        {"start": float(s.get("start", 0)), "end": float(s.get("end", 0)),
+         "text": (s.get("text") or "").strip(), **{k: v for k, v in s.items()
+                                                   if k not in ("start", "end", "text")}}
         for s in segments if (s.get("text") or "").strip()
     ]
     if not compact:
         return []
 
     ai = get_ai_client(user_settings)
-    raw = await ai.chat(
-        messages=[{"role": "user", "content": _TRANSLATE_PROMPT.format(
-            language=target_language, segments_json=_json.dumps(compact, ensure_ascii=False),
-        )}],
-        max_tokens=4000,
-    )
-    text = _strip_json_fence(raw)
-    try:
-        parsed = _json.loads(text)
-        out = parsed.get("segments", []) if isinstance(parsed, dict) else parsed
-    except _json.JSONDecodeError:
-        raise RuntimeError(f"AI returned malformed translation JSON: {text[:200]!r}")
-    if not isinstance(out, list) or not out:
+    out: list[dict] = []
+
+    for start in range(0, len(compact), _TRANSLATE_BATCH_SIZE):
+        batch = compact[start:start + _TRANSLATE_BATCH_SIZE]
+        source_texts = [s["text"] for s in batch]
+        translated, failed_idx = await _translate_batch_resilient(
+            ai, target_language, source_texts)
+        if failed_idx:
+            logger.warning(
+                "translate: %d/%d line(s) kept their source text after "
+                "per-line retries", len(failed_idx), len(source_texts))
+        for i, (src_seg, txt) in enumerate(zip(batch, translated)):
+            new_seg = {**src_seg, "text": txt}
+            # DROP the per-word array — Whisper's `words` are the SOURCE
+            # language's words with source-aligned timings. Keeping them makes
+            # the caption renderer prefer word-level data over `text` and burn
+            # the original words onto the video, which reads as "nothing was
+            # translated". Without them the renderer falls back to the segment
+            # text and spreads it evenly across the segment.
+            new_seg.pop("words", None)
+            if i in failed_idx:
+                new_seg["untranslated"] = True
+            out.append(new_seg)
+
+    if not out:
         raise RuntimeError("Translation produced no segments")
+    # Degrading a few lines is the point of the split-and-retry; degrading
+    # EVERY line is not a translation. Shipping that would burn a full render
+    # to hand back the source captions under a "translated" label, so fail
+    # loudly instead. (A provider-level outage raises AIProviderError and
+    # never reaches here — this catches a model that answers, badly, every
+    # time.)
+    if all(s.get("untranslated") for s in out):
+        raise RuntimeError(
+            "Translation failed — the model never returned a usable result. "
+            "Try again, or pick a different target language."
+        )
     return out
+
+
+async def _translate_batch_resilient(
+    ai, target_language: str, texts: list[str], attempts: int = 2,
+) -> tuple[list[str], set[int]]:
+    """`_translate_one_batch` with divide-and-conquer recovery.
+
+    Returns (translations, indexes that kept their source text). Splitting is
+    the fix for a model that merges or drops a line: halving the batch changes
+    the shape of the request, and a single-line request has essentially no way
+    to come back with the wrong count. Extra calls happen only on failure.
+    """
+    import json as _json
+    try:
+        return await _translate_one_batch(ai, target_language, texts, attempts), set()
+    except (RuntimeError, ValueError, _json.JSONDecodeError) as e:
+        if len(texts) <= 1:
+            # One line that won't translate even alone. Keeping the source text
+            # preserves every other caption's timing — dropping or padding it
+            # would slide the rest of the video out of sync.
+            logger.warning("translate: line kept untranslated (%s): %r", e, texts[:1])
+            return list(texts), {0}
+        mid = len(texts) // 2
+        logger.info("translate: batch of %d failed (%s) — retrying as %d + %d",
+                    len(texts), e, mid, len(texts) - mid)
+        # attempts=1 below: the split IS the retry (see _translate_one_batch),
+        # so re-retrying at every level would fan one bad 20-line batch out to
+        # ~60 AI calls.
+        left, lf = await _translate_batch_resilient(ai, target_language, texts[:mid], 1)
+        right, rf = await _translate_batch_resilient(ai, target_language, texts[mid:], 1)
+        return left + right, lf | {mid + i for i in rf}
+
+
+async def _translate_one_batch(
+    ai, target_language: str, texts: list[str], attempts: int = 2,
+) -> list[str]:
+    """Send one batch to the AI; parse + validate; retry once on a shape error."""
+    import json as _json
+    response = ""
+    for attempt in range(max(1, attempts)):
+        try:
+            stricter = ("\n\nIMPORTANT: respond with ONLY the JSON array. "
+                        "No code fences, no commentary, no extra text.")
+            prompt = _translation_prompt(target_language, texts)
+            response = await ai.chat(
+                messages=[{"role": "user",
+                           "content": prompt if attempt == 0 else prompt + stricter}],
+                max_tokens=2048,
+            )
+            arr = _json.loads(_strip_json_fence(response))
+            if not isinstance(arr, list):
+                raise ValueError(f"Expected list, got {type(arr).__name__}")
+            if len(arr) != len(texts):
+                raise ValueError(
+                    f"Translation count mismatch: input {len(texts)}, output {len(arr)}")
+            if not all(isinstance(x, str) for x in arr):
+                raise ValueError("Non-string in translation output")
+            return arr
+        except (_json.JSONDecodeError, ValueError) as e:
+            logger.warning(
+                "Translate batch parse failed (attempt %d/%d): %s — raw: %r",
+                attempt + 1, max(1, attempts), e, response[:200],
+            )
+            if attempt == max(1, attempts) - 1:
+                raise RuntimeError(f"Translation failed after retry: {e}")
+
+    raise RuntimeError("Translation flow ended unexpectedly")
 
 
 async def run_tool_translate(

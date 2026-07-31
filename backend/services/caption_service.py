@@ -78,6 +78,26 @@ def insert_emojis_into_words(words: list[dict], style: str = "moderate") -> list
 
 # ── Caption Style Presets ──────────────────────────────────────────────────────
 
+# Style names that mean "don't burn captions at all".
+#
+# `generate_captions_ass` falls back to the "viral" preset for ANY unknown
+# style name (a deliberate never-crash default), so a caller that forwards
+# "none" straight through gets fully-burned viral captions instead of a bare
+# clip. Every caller that exposes a "no captions" choice MUST check this
+# BEFORE reaching the ASS builder. Bug: Clip Studio's "none" chip burned
+# viral subtitles onto every extracted clip.
+CAPTIONS_OFF = frozenset({"none", "off", "disabled"})
+
+
+def captions_disabled(style: str | None) -> bool:
+    """True when `style` is a "no captions" sentinel (see CAPTIONS_OFF).
+
+    `None` / empty is NOT disabled — those mean "caller didn't specify",
+    and existing callers normalize them to their own default.
+    """
+    return (style or "").strip().lower() in CAPTIONS_OFF
+
+
 # Caption styles. Note on positioning:
 # - `alignment` is ASS numpad: 1=bot-L, 2=bot-C, 3=bot-R, 5=mid-C, 8=top-C, etc.
 #   ALL "active" styles use alignment=2 (bottom-center) so margin_v actually
@@ -924,6 +944,15 @@ async def burn_captions(
         )
         return video_path
 
+    # The burn is a full H.264 re-encode, so its wall-clock scales with the
+    # SOURCE length — a flat 600 s cap killed a 17-minute video at the last
+    # step, after transcription and (for the translate tool) translation had
+    # already run. Budget 3x realtime with the same floor, and a 90 min
+    # ceiling so a pathological input can't pin a worker forever.
+    from backend.services.video_utils import probe_duration
+    duration = await asyncio.to_thread(probe_duration, video_path, 0.0)
+    timeout_s = int(min(max(duration * 3, 600), 5400))
+
     def _burn():
         # Escape path for FFmpeg filter (colons and backslashes)
         escaped_ass = str(ass_path.resolve()).replace("\\", "/").replace(":", "\\:")
@@ -936,7 +965,14 @@ async def burn_captions(
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             str(output_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "ASS caption burn timed out after %d min on a %.0f min source "
+                "— returning the original video", timeout_s // 60, duration / 60,
+            )
+            return video_path
         if result.returncode != 0:
             logger.error(f"ASS caption burn FFmpeg error: {result.stderr[:500]}")
             return video_path  # Return original on failure

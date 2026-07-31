@@ -35,12 +35,19 @@ pytrends==4.9.2
 # YouTube). The floor makes such an install fail loudly instead of
 # producing a silently-broken downloader. Upgrade freely above it.
 #
-# curl-cffi: capped <0.15 — 0.15.0 broke yt-dlp's curl_cffi request
-# handler; 0.10–0.14 are the known-good range for current yt-dlp.
-# Optional at runtime: the service degrades to urllib's fingerprint if
-# it's missing/incompatible (see ytdlp_service._IMPERSONATE_TARGET).
+# curl-cffi: floor >=0.15 — DO NOT relax it. 0.14's streaming path submits
+# `perform` to an internal executor and resets the same libcurl easy handle
+# from a done-callback while the calling thread is still parsing the
+# response; two threads on one handle SIGABRT the whole backend process — no
+# traceback, no failing test, process gone. TikTok's extractor forces
+# impersonate=True, so it runs on every TikTok probe and download. Measured
+# upstream: 0.14.0 aborted 4 of 6 concurrent-probe runs, 0.15.0 aborted 0 of
+# 14. The old <0.15 cap was for yt-dlp <= 2026.04, whose request-handler API
+# 0.15 broke; our floor is 2026.7.4, where it is fine.
+# Optional at runtime: the service degrades to urllib's fingerprint if it's
+# missing/incompatible (see ytdlp_service._IMPERSONATE_TARGET).
 yt-dlp>=2026.7.4
-curl-cffi>=0.10,<0.15
+curl-cffi>=0.15
 
 # Transcription
 faster-whisper

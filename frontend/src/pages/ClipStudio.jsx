@@ -33,6 +33,7 @@ import AutoAwesomeIcon from "@mui/icons-material/AutoAwesomeOutlined"
 import http from "../api/http"
 import useAppStore from "../store/appStore"
 import ActiveJobsBanner from "../components/create/ActiveJobsBanner"
+import { CAPTION_STYLES } from "../components/tools/captionOptions"
 
 /* ── Helpers ───────────────────────────────────────────────── */
 
@@ -366,7 +367,9 @@ const WHISPER_QUALITIES = [
 
 // Caption styles the OSS pipeline can render. emoji_style vocab matches the
 // backend's _EMOJI_STYLES set (none|minimal|moderate|heavy, default moderate).
-const CAPTION_STYLE_OPTIONS = ["viral", "classic", "bold", "none"]
+// Every engine style plus the "none" sentinel — the picker used to list
+// three of the ten the renderer supports.
+const CAPTION_STYLE_OPTIONS = [...CAPTION_STYLES.map(s => s.value), "none"]
 const EMOJI_STYLE_OPTIONS = [
   { v: "none", label: "Off" },
   { v: "minimal", label: "Minimal" },
@@ -410,6 +413,11 @@ function CaptionStylePicker({ value, onChange }) {
             sx={{ textTransform: "capitalize", cursor: "pointer" }} />
         ))}
       </Stack>
+      {value === "none" && (
+        <Typography variant="caption" sx={{ color: "text.secondary", mt: 0.5, display: "block" }}>
+          No burned-in text at all — the hook overlay is skipped too.
+        </Typography>
+      )}
     </Box>
   )
 }
@@ -876,7 +884,10 @@ export default function ClipStudio() {
     try {
       const [srcRes, clipRes] = await Promise.all([
         http.get("/api/downloaded", { params: { limit: 200 } }),
-        http.get("/api/videos", { params: { limit: 100 } }),
+        // Filter server-side: an unfiltered page of 100 could be entirely
+        // recent non-clip rows, rendering "No clips yet" over a library full
+        // of clips.
+        http.get("/api/videos", { params: { limit: 100, source_type: "clip_extraction" } }),
       ])
       // Show all downloaded videos (sorted longest first — best for clipping)
       const downloadedVideos = (srcRes.data?.videos || srcRes.data || [])

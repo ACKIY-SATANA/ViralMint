@@ -26,3 +26,63 @@ def probe_duration(file_path: Path | str, default: float = 0.0) -> float:
         return float(result.stdout.strip())
     except Exception:
         return default
+
+
+def probe_media(file_path: Path | str) -> tuple[int, int, float]:
+    """Get (width, height, duration_seconds) in ONE ffprobe call.
+
+    Prefer this over calling a dimensions probe and `probe_duration`
+    back-to-back — a caller that needs both otherwise spawns two subprocesses
+    per file, which adds up on a pipeline that touches every clip. Returns
+    (0, 0, 0.0) on any failure; callers decide the fallback.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height:format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(file_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        # Output is one value per line: width, height, duration.
+        parts = [p for p in result.stdout.strip().splitlines() if p.strip()]
+        if len(parts) < 3:
+            return 0, 0, 0.0
+        return int(parts[0]), int(parts[1]), float(parts[2])
+    except Exception:
+        return 0, 0, 0.0
+
+
+# Aspect labels the app stores on GeneratedVideo.aspect_ratio and keys its
+# Library tile sizing / filter chips off. Anything not near-square and not
+# portrait reads as landscape.
+def aspect_from_dims(width: int, height: int, default: str = "9:16") -> str:
+    """Map raw dimensions onto the app's aspect vocabulary. Pure.
+
+    The 1:1 band is deliberately narrow (±2%) — encoders round odd
+    dimensions, so 1080x1082 is square in intent.
+    """
+    if width <= 0 or height <= 0:
+        return default
+    ratio = width / height
+    if 0.98 <= ratio <= 1.02:
+        return "1:1"
+    return "16:9" if ratio > 1 else "9:16"
+
+
+def aspect_label(file_path: Path | str, default: str = "9:16") -> str:
+    """Return "9:16" / "16:9" / "1:1" for a media file's real dimensions.
+
+    Callers persist this instead of assuming an aspect: clip extraction only
+    reframes a LANDSCAPE source, so a square or 4:5 source passes through
+    untouched and was still labelled 9:16 — and the Library renders the tile
+    at the label's shape, not the file's. Returns *default* when the probe
+    fails so a missing ffprobe never breaks a save.
+    """
+    w, h, _ = probe_media(file_path)
+    return aspect_from_dims(w, h, default=default)

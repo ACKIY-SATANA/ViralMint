@@ -13,9 +13,9 @@ export default function ToolReframe() {
       endpoint="/api/tools/reframe"
     >
       <Typography variant="body2" sx={{ color: "text.secondary" }}>
-        Auto-detects speakers using MediaPipe Face Detection and keeps them
-        centered. Falls back to a static center crop if no face is found.
-        Already-portrait videos are returned unchanged.
+        Fits the whole frame into 9:16 over a blurred, zoomed copy of itself —
+        nothing is cropped away. Sources that are already 9:16 or narrower are
+        returned unchanged; square and 4:5 clips are reframed.
       </Typography>
     </ToolRunner>
   )

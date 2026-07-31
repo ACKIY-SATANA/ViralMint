@@ -47,8 +47,13 @@ class _YtDlpLogger:
 # fingerprint) so sites with TLS-aware bot defenses (Cloudflare/Akamai)
 # can't fingerprint the client by handshake alone. Wrapped in try/except so
 # a missing or version-incompatible curl-cffi NEVER breaks downloads —
-# they just fall back to urllib's default fingerprint. Pair versions per
-# requirements.txt (curl-cffi 0.10–0.14 with current yt-dlp).
+# they just fall back to urllib's default fingerprint.
+#
+# Requires curl-cffi >= 0.15 (see the pin note in requirements.txt): 0.14's
+# streaming path resets a libcurl handle from a done-callback while the
+# calling thread is still reading it, which SIGABRTs the whole backend
+# process. TikTok's extractor forces impersonate=True, so that is every
+# TikTok probe and download.
 _IMPERSONATE_TARGET = None
 try:
     import curl_cffi  # noqa: F401  (presence test; yt-dlp loads its own handler)
@@ -95,9 +100,63 @@ def _yt_dlp_base_opts() -> dict:
     return opts
 
 
+# JS-runtime discovery cache. A positive result is process-lifetime (a runtime
+# doesn't move once found); a NEGATIVE result is deliberately not cached, so a
+# user who installs Node or deno mid-session benefits on the very next
+# download. The cost is two shutil.which calls — noise next to a yt-dlp run.
+_JS_RUNTIMES_RESOLVED: dict | None = None
+_warned_no_js_runtime = False
+
+
+def _resolve_js_runtimes() -> dict:
+    """Build yt-dlp's `js_runtimes` dict from what this machine actually has.
+
+    Why discovery instead of a static pin: this used to be hardcoded
+    `{"node": {}}`, which carried two silent failure modes on a machine
+    without Node (the common case for packaged desktop users — the app bundles
+    no JS runtime):
+
+      1. Explicitly passing js_runtimes REPLACES yt-dlp's default, so the
+         hardcoded pin also disabled the `deno` default — a user with deno but
+         not node got NO runtime instead of one.
+      2. With no runtime the EJS challenge solver can't run, n-signature
+         challenges go unsolved, and YouTube formats go missing or 403 —
+         indistinguishable in a bug report from a cookie problem.
+
+    Nothing found → pass the default-shaped {'deno': {}} through and log ONE
+    clear warning naming the consequence, instead of letting yt-dlp's buried
+    per-download warning be the only signal.
+    """
+    global _JS_RUNTIMES_RESOLVED, _warned_no_js_runtime
+    if _JS_RUNTIMES_RESOLVED is not None:
+        return dict(_JS_RUNTIMES_RESOLVED)
+
+    runtimes: dict = {}
+    if shutil.which("deno"):
+        runtimes["deno"] = {}
+    if shutil.which("node"):
+        runtimes["node"] = {}
+
+    if runtimes:
+        _JS_RUNTIMES_RESOLVED = dict(runtimes)
+        return dict(runtimes)
+
+    # Nothing found. Don't cache — the user may install a runtime later.
+    if not _warned_no_js_runtime:
+        _warned_no_js_runtime = True
+        logger.warning(
+            "No JavaScript runtime (deno/node) found — YouTube n-signature "
+            "challenges can't be solved, so some formats will be missing or "
+            "fail with HTTP 403. Installing Node.js or deno fixes this."
+        )
+    return {"deno": {}}
+
+
 def _yt_dlp_js_opts() -> dict:
-    """Enable Node.js runtime + EJS challenge solver for YouTube extraction,
+    """Enable a JS runtime + EJS challenge solver for YouTube extraction,
     plus the per-extractor tweaks that keep the flaky sites working.
+
+    Runtime selection is machine-aware — see `_resolve_js_runtimes`.
 
     - **youtube**: cycle player clients, leading with the three that yt-dlp's
       PO Token Guide lists as NOT requiring a token (tv, web_embedded,
@@ -114,7 +173,7 @@ def _yt_dlp_js_opts() -> dict:
     - **instagram/reddit**: bump extractor retries (known to flake).
     """
     return {
-        "js_runtimes": {"node": {}},
+        "js_runtimes": _resolve_js_runtimes(),
         "remote_components": {"ejs:github": {}},
         "extractor_args": {
             "youtube": {
@@ -412,6 +471,23 @@ def _apply_cookies(opts: dict):
             opts["cookiesfrombrowser"] = (browser,)
 
 
+def _drop_cookies_for_403(opts: dict) -> bool:
+    """Remove the cookie jar from `opts` after an HTTP 403. True if it changed.
+
+    This is NOT a give-up step. On YouTube, supplying ANY cookie makes yt-dlp
+    skip every player client that can't carry one — `android_vr`, `tv_simply`,
+    `ios` (visible in logs as `Skipping client "android_vr" since it does not
+    support cookies`). Those are exactly the clients yt-dlp's PO-Token guide
+    lists as token-free, so what remains hands back stream URLs that need an
+    n-signature solve; without a JS runtime that can't happen and googlevideo
+    answers 403. Dropping the jar puts the token-free clients back in play.
+    """
+    had = "cookiefile" in opts or "cookiesfrombrowser" in opts
+    opts.pop("cookiefile", None)
+    opts.pop("cookiesfrombrowser", None)
+    return had
+
+
 def _is_bot_detection_error(error_str: str) -> bool:
     """Check if the error is a YouTube bot detection / sign-in required error."""
     indicators = ["sign in to confirm", "not a bot", "cookies-from-browser", "login required"]
@@ -631,6 +707,24 @@ async def download_video(
                             f"YouTube is rate-limiting downloads from this IP. "
                             f"Try again in a few minutes. (Error: {e})"
                         )
+
+                    # ── HTTP 403 with cookies applied: retry WITHOUT them ────
+                    # A 403 is often caused BY the cookie jar (see
+                    # _drop_cookies_for_403). Retrying the same configuration
+                    # can only fail the same way, so drop the jar once and try
+                    # again — including across the format fallbacks, hence the
+                    # mirror onto base_opts, which every later format is
+                    # rebuilt from.
+                    if ("http error 403" in error_str or "403: forbidden" in error_str) \
+                            and _drop_cookies_for_403(video_opts):
+                        for _ck in ("cookiefile", "cookiesfrombrowser"):
+                            base_opts.pop(_ck, None)
+                        logger.warning(
+                            "HTTP 403 with cookies applied — retrying without them "
+                            "(re-enables the token-free player clients)"
+                        )
+                        _cleanup_partial_files(output_dir, file_stem)
+                        continue
 
                     # ── Bot detection: retry with fresh cookies ────
                     if _is_bot_detection_error(str(e)) and attempt == 0:

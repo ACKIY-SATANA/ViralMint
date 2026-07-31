@@ -27,6 +27,7 @@ from sqlalchemy import select
 from backend.config import settings as app_settings
 from backend.database import AsyncSessionLocal
 from backend.models.job import Job
+from backend.services.caption_service import CAPTION_STYLES as _CAPTION_STYLE_DEFS
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tools", tags=["tools"])
@@ -44,6 +45,21 @@ VIDEO_MAX_BYTES = 1000 * 1024 * 1024  # 1000 MB
 LOGO_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
+# The Audio tools take audio as well as video. They used to validate against
+# VIDEO_EXTS alone, so a podcast mp3 was rejected with a 400 AFTER the upload
+# had been sent — on the tools whose whole job is the audio track.
+AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
+MEDIA_EXTS = VIDEO_EXTS | AUDIO_EXTS
+
+# Caption styles this API accepts — DERIVED from the caption engine so the
+# surfaces can't drift again. `brainrot` is excluded: it is a look applied by
+# its own pipeline, not a general caption preset.
+#
+# This was hardcoded to ("viral", "classic", "bold") long after the engine grew
+# to eleven, so the Captions tool offered three of them and posting any of the
+# other seven came back 422.
+_CAPTION_STYLE_IDS = tuple(k for k in _CAPTION_STYLE_DEFS if k != "brainrot")
+CaptionStyleId = Literal[_CAPTION_STYLE_IDS]
 
 
 async def save_upload(
@@ -177,7 +193,7 @@ async def download_tool_result(job_id: str):
 @router.post("/captions")
 async def captions_tool(
     file: UploadFile = File(...),
-    style: Literal["viral", "classic", "bold"] = Form("viral"),
+    style: CaptionStyleId = Form("viral"),
     emoji_style: Literal["none", "minimal", "moderate", "heavy"] = Form("moderate"),
 ):
     from backend.agents.job_helper import create_job
@@ -210,7 +226,7 @@ async def audio_enhance_tool(
     from backend.core.task_runner import dispatch
     from backend.core.tool_runners import run_tool_audio_enhance
     job = await create_job("tool:audio_enhance", "local", {})
-    in_path = await save_upload(file, job.id, VIDEO_EXTS, VIDEO_MAX_BYTES)
+    in_path = await save_upload(file, job.id, MEDIA_EXTS, VIDEO_MAX_BYTES)
     dispatch(run_tool_audio_enhance(job.id, in_path))
     return {"job_id": job.id}
 
@@ -278,7 +294,7 @@ async def remove_silence_tool(
     from backend.core.task_runner import dispatch
     from backend.core.tool_runners import run_tool_remove_silence
     job = await create_job("tool:remove_silence", "local", {})
-    in_path = await save_upload(file, job.id, VIDEO_EXTS, VIDEO_MAX_BYTES)
+    in_path = await save_upload(file, job.id, MEDIA_EXTS, VIDEO_MAX_BYTES)
     dispatch(run_tool_remove_silence(job.id, in_path))
     return {"job_id": job.id}
 

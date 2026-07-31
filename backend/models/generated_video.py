@@ -5,6 +5,14 @@ from datetime import datetime
 from uuid import uuid4
 from backend.database import Base
 
+# Longest string accepted as a `niche`. A real niche is a search phrase
+# ("stoicism", "personal finance for gen z"), never a sentence. Shared by the
+# writer (agents/generator._resolve_row_niche) and any reader so the two can't
+# drift: the pipeline used to store the analyzer's prose `topic_angle` here,
+# producing 250-450 char "niches". The column is String(200) but SQLite does
+# not enforce VARCHAR length, so it failed silently.
+NICHE_MAX_CHARS = 100
+
 
 class GeneratedVideo(Base):
     __tablename__ = "generated_videos"
@@ -39,7 +47,7 @@ class GeneratedVideo(Base):
     clip_hook_type = Column(String(30), nullable=True)      # curiosity_gap | contrarian | emotional_peak | question | number_promise | story_loop | actionable_tip | shocking_claim | general
     clip_virality_reason = Column(Text, nullable=True)      # Why this clip is viral
     clip_score_breakdown_json = Column(Text, nullable=True) # JSON: {flow, value, trend, shareability} each 1-10 — vidiq-style sub-scores behind the virality_score. Hook lives on clip_hook_score so it's not duplicated here.
-    caption_status = Column(String(20), nullable=True)      # "applied" | "failed" | null
+    caption_status = Column(String(20), nullable=True)      # "applied" | "skipped" (caption_style="none") | "no_segments" (silent clip) | "failed" | "extract_failed" | null
     metadata_status = Column(String(20), nullable=True)     # "ai_generated" | "fallback" | null
 
     # Upload tracking

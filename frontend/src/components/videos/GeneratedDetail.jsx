@@ -92,9 +92,11 @@ export default function GeneratedDetail({ video, onUpload, onDelete, onClose, on
     }
     setExporting(true)
     try {
+      // No `method` — the backend picks it ("auto"): crop when widening,
+      // blur_fill when narrowing. Hardcoding blur_fill here fitted a 9:16
+      // short inside a 16:9 frame, leaving the picture a narrow strip.
       const res = await http.post(`/api/videos/${video.id}/export`, {
         target_aspect: targetAspect,
-        method: "blur_fill",
       }, { responseType: "blob" })
       const url = URL.createObjectURL(res.data)
       const a = document.createElement("a")

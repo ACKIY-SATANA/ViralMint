@@ -34,6 +34,123 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Fixed
+- **Downloads use whatever JavaScript runtime the machine has.** yt-dlp was
+  handed a hardcoded `node`, and passing that option *replaces* yt-dlp's own
+  default — so a machine with deno but not Node ended up with no runtime at
+  all, and a machine with neither got no warning. Without a runtime YouTube's
+  n-signature challenges go unsolved and formats go missing or 403. Node and
+  deno are now discovered, and a machine with neither gets one clear warning
+  naming the consequence.
+- **An HTTP 403 caused by cookies is now retried without them.** Supplying any
+  cookie makes yt-dlp skip every player client that can't carry one — which are
+  exactly the token-free ones — so a 403 was retried with the same losing
+  configuration until the attempts ran out.
+- **curl-cffi floor raised to 0.15.** 0.14 resets a libcurl handle from a
+  done-callback while the calling thread is still reading it, which aborts the
+  whole backend process — no traceback, just a dead app. TikTok forces
+  impersonation, so it was reachable from every TikTok probe and download.
+- **A translation that fails on every line is an error, not a silent
+  passthrough.** Degrading a few captions to their source text is the point of
+  the retry ladder; degrading all of them would burn a full render to hand back
+  the original captions under a "translated" label.
+- **Translating a long video no longer dies on one bad batch.** Translation
+  sent every segment in a single AI call and enforced a strict 1:1 count by
+  raising, so a long video overflowed the token budget and a model that merged
+  two lines threw away the Whisper pass and everything already translated.
+  Segments now go in batches of 20, a batch that comes back the wrong length is
+  split and retried in halves down to single lines, and a line that fails even
+  alone keeps its source text instead of sliding every later caption off its
+  timestamp.
+- **Burning captions onto a long video no longer times out at the last step.**
+  The burn is a full re-encode on what was a flat 10-minute cap, so a 17-minute
+  video failed after transcription (and, in the Translate tool, translation)
+  had already run. The budget now scales with the source.
+- **Metadata and Auto Chapters show their result inline again.** Both previews
+  read a field the store never wrote, so both always fell through to "click
+  Download instead" — the copy-to-clipboard preview, which is the whole point
+  of a titles/tags/chapters tool, was unreachable code. They now read the job's
+  own output, which also means the preview survives a page reload.
+- **The Captions tool offers every caption style.** The renderer has ten; the
+  endpoint validated three and the picker listed three, so neon, karaoke, glow,
+  Bold Urban, Warm Glow, Monochrome and Minimal were unreachable from the tool
+  built to apply them (and posting one came back 422). The accepted list is now
+  derived from the engine, with a test pinning the API, both pickers and the
+  Smart Video config list to it.
+- **Reframe's description matches what it does.** The page advertised
+  MediaPipe face-tracking with a center-crop fallback; the tool is a blur-fill
+  fit and this build ships no face detection at all.
+- **The Audio tools accept audio.** Enhance Audio and Silence Remover validated
+  uploads against the video extensions only, so a podcast mp3 was rejected with
+  a 400 *after* the upload — on the two tools whose whole job is the audio
+  track. Both now take video or mp3/wav/m4a/aac/ogg/flac, and audio in means
+  mp3 out.
+- **Enhance Audio works on WebM, and never reports success over an empty file.**
+  `-c:v copy` into an .mp4 is invalid for VP8/VP9 — and .webm is what most
+  screen recorders export — so the job failed with a raw ffmpeg codec-tag
+  error. It now retries with an H.264 re-encode, refuses to finish over a
+  missing/0-byte output, and says plainly when a file has no audio track
+  instead of surfacing a filtergraph error.
+- **Silence removal is budgeted against the source length.** The ffmpeg pass
+  re-encodes the whole timeline but carried a flat cap sized for 30-second
+  clipper clips, so a long recording died on a raw `TimeoutExpired` with the
+  entire command line in the message. The budget now scales with the source
+  (measured, not "where the last word ends"), with a floor, a 30-minute
+  ceiling, and a readable message if it is ever hit.
+- **The Library no longer returns a short (or empty) page after self-healing.**
+  The prune that removes rows whose file is gone ran inside the fetched page
+  and returned what was left, so a library with enough stale rows could answer
+  "no videos" next to a total of several hundred. It now re-queries after
+  committing the deletes, so you get a full page.
+- **Clip Studio asks the backend for clips.** It pulled an unfiltered page of
+  100 videos and filtered in the browser, so enough recent non-clip rows
+  rendered "No clips yet" over a library full of clips. `GET /api/videos` takes
+  a `source_type` filter now.
+- **A video's niche is a keyword again, not a paragraph.** The generator stored
+  the analyzer's `topic_angle` — prose by design — in the niche column. It now
+  resolves a real short niche (the source's own, else the scout query that
+  found it) or stores nothing.
+- **Transcription shows live progress instead of looking hung.** Whisper's
+  segment generator was consumed in one gulp, so a 40-minute audio sat at a
+  frozen 7% / 15% for the entire 15–30 minute transcription — indistinguishable
+  from a hang, and reported as one. Analyze and Clip Studio now show a real
+  percentage as the decode advances (the analyzer writes it to the DB too, so
+  the polled jobs list moves as well as the live socket). Two *long*
+  transcriptions also now queue explicitly instead of thrashing the machine
+  invisibly inside ctranslate2; short ones still run concurrently, so a caption
+  pass never waits behind a batch job.
+- **Caption style "None" really means no captions.** Clip Studio's "none" chip
+  (which even greys out AutoEmoji when you pick it) was never treated as a
+  sentinel backend-side: the ASS builder falls back to the "viral" preset for
+  any style name it doesn't recognise, so every "no captions" extraction came
+  back with fully burned-in yellow word-by-word subtitles. "None" now skips the
+  burn entirely — including the hook overlay, which rides the same file.
+- **Extracted clips are labelled with their real shape and length.** Every clip
+  row was written as 9:16 with the requested window's duration. Extraction only
+  reframes a *landscape* source, so square and 4:5 sources kept their own shape
+  and were mislabelled — the Library sizes each tile from that column — and
+  "Remove silence" cuts content out, so the stored duration overstated the file.
+  Both are now probed from the finished clip, which also stops the thumbnail
+  timestamp landing past the end of a heavily-trimmed clip.
+- **AI metadata can no longer overwrite a clip's own fields.** The model's
+  metadata was merged into the clip record last and unfiltered, so any key it
+  invented won — including `video_path`, the file we persist and serve. Only
+  the four requested fields are kept now.
+- **Exporting a vertical video to 16:9 no longer shrinks the picture.** The
+  export hardcoded the blur-fill look, which FITS the whole source inside the
+  target frame. Going the other way (16:9 → 9:16) that is exactly right and it
+  is how every short is built — but widening a 9:16 short left the content as a
+  narrow strip with blur either side, and because ViralMint shorts are
+  themselves blur-fill composites the export nested a second box and the
+  picture landed at about a third of the frame. Exports now default to `auto`:
+  crop when widening, blur-fill when narrowing. An explicit `method` still wins.
+- **Reframe to Vertical works on square and 4:5 sources.** The "already
+  vertical" short-circuit tested `width <= height`, so a 1080x1080 or 1080x1350
+  clip came back byte-identical with an "already vertical" notice instead of
+  being cropped to 9:16. Only 9:16-or-narrower has nothing to crop.
+- **Removed a dead duplicate export route.** A second
+  `POST /api/videos/{id}/export` handler had been shadowed by the first since
+  the day it was added; its one useful behaviour (caching the 16:9 render for
+  later streaming) now lives in the live handler.
 - **TikTok channels show their full video list.** The My Channels grid capped
   TikTok at 20 videos while the YouTube side fetched 200. Both are 200 now; the
   TikTok scrape is a single request either way.

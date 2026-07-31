@@ -822,6 +822,58 @@ async def apply_auto_zoom(
     return await asyncio.to_thread(_run)
 
 
+ASPECT_DIMS = {
+    "16:9": (1920, 1080),
+    "9:16": (1080, 1920),
+    "1:1":  (1080, 1080),
+    "4:5":  (1080, 1350),
+}
+
+
+async def _probe_dimensions(video_path: Path) -> tuple[int, int]:
+    """(width, height) of the first video stream, or (0, 0) if unreadable —
+    callers treat 0 as 'unknown' and fall back to the safe path."""
+    def _run() -> tuple[int, int]:
+        try:
+            probe = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height",
+                 "-of", "csv=p=0", str(video_path)],
+                capture_output=True, text=True, timeout=10,
+            )
+            w, h = probe.stdout.strip().split(",")[:2]
+            return int(w), int(h)
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            logger.debug("Could not probe video dimensions: %s", e)
+            return 0, 0
+    return await asyncio.to_thread(_run)
+
+
+def pick_reframe_method(src_w: int, src_h: int, target_aspect: str) -> str:
+    """Choose crop vs blur_fill for a re-frame. Pure — unit-tested.
+
+    blur_fill is the right look when NARROWING (16:9 -> 9:16): the whole frame
+    is preserved as a centered band over a blurred backdrop, which is the
+    familiar short-form treatment.
+
+    WIDENING it is actively bad: fitting a 9:16 source inside 16:9 leaves the
+    real content as a narrow full-height strip, ~1/3 of the width, with blur
+    either side. When the source is ITSELF a blur_fill composite — which every
+    ViralMint short is, since that's how shorts are built from landscape
+    sources — the result nests a second box and the picture lands at roughly a
+    third of the frame in each direction. Cropping to fill keeps the pixels
+    sharp and full-frame; on an already-composited source it lands almost
+    exactly on the original content band. The cost is the top/bottom margin —
+    on a true portrait source that can clip a burned caption, which still beats
+    rendering it at a third scale.
+    """
+    tw, th = ASPECT_DIMS.get(target_aspect, (1920, 1080))
+    if not src_w or not src_h:
+        return "blur_fill"          # unknown source → the safe, lossless look
+    # 2% tolerance so a near-identical aspect (1.77 vs 1.78) isn't "widening".
+    return "crop" if (tw / th) > (src_w / src_h) * 1.02 else "blur_fill"
+
+
 async def convert_aspect_ratio(
     video_path: Path,
     target_aspect: str = "16:9",
@@ -833,12 +885,21 @@ async def convert_aspect_ratio(
 
     target_aspect: "16:9" or "9:16"
     method:
+      - "auto": crop when widening, blur_fill when narrowing (see
+        `pick_reframe_method`) — what callers should use unless the user
+        explicitly picked a look
       - "letterbox": add black bars to fill (no content lost)
       - "crop": crop center to fill (content lost at edges)
       - "blur_fill": blurred+scaled background behind original (modern look)
 
     Returns path to converted video.
     """
+    if method == "auto":
+        src_w, src_h = await _probe_dimensions(video_path)
+        method = pick_reframe_method(src_w, src_h, target_aspect)
+        logger.info("convert_aspect_ratio: auto → %s (src %sx%s → %s)",
+                    method, src_w, src_h, target_aspect)
+
     if output_path is None:
         stem = video_path.stem
         output_path = video_path.parent / f"{stem}_{target_aspect.replace(':', 'x')}_{method}.mp4"
@@ -847,13 +908,7 @@ async def convert_aspect_ratio(
         return output_path
 
     def _run():
-        ASPECT_MAP = {
-            "16:9": (1920, 1080),
-            "9:16": (1080, 1920),
-            "1:1":  (1080, 1080),
-            "4:5":  (1080, 1350),
-        }
-        target_w, target_h = ASPECT_MAP.get(target_aspect, (1920, 1080))
+        target_w, target_h = ASPECT_DIMS.get(target_aspect, (1920, 1080))
 
         if method == "letterbox":
             # Pad with black bars — no content lost

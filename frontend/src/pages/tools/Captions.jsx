@@ -7,12 +7,11 @@ import SubtitlesOutlinedIcon from "@mui/icons-material/SubtitlesOutlined"
 import RecordVoiceOverOutlinedIcon from "@mui/icons-material/RecordVoiceOverOutlined"
 import ToolRunner from "../../components/tools/ToolRunner"
 import useDocumentTitle from "../../hooks/useDocumentTitle"
-
-const STYLES = [
-  { value: "viral", label: "Viral", description: "Yellow highlight, 3 words" },
-  { value: "classic", label: "Classic", description: "Full sentence, no highlight" },
-  { value: "bold", label: "Bold", description: "Green highlight, 2 words" },
-]
+// One source for the style list, pinned to the caption engine by
+// tests/test_caption_styles_parity.py — this page used to hardcode three of
+// the engine's ten, so the rest were unreachable from the tool that applies
+// them.
+import { CAPTION_STYLES as STYLES, EMOJI_LEVELS } from "../../components/tools/captionOptions"
 
 export default function ToolCaptions() {
   useDocumentTitle("Add Captions")
@@ -62,10 +61,9 @@ export default function ToolCaptions() {
         <FormControl size="small" sx={{ minWidth: 180 }}>
           <InputLabel>Emoji intensity</InputLabel>
           <Select value={emojiStyle} label="Emoji intensity" onChange={(e) => setEmojiStyle(e.target.value)}>
-            <MenuItem value="none">None</MenuItem>
-            <MenuItem value="minimal">Minimal</MenuItem>
-            <MenuItem value="moderate">Moderate</MenuItem>
-            <MenuItem value="heavy">Heavy</MenuItem>
+            {EMOJI_LEVELS.map((e) => (
+              <MenuItem key={e.value} value={e.value}>{e.label}</MenuItem>
+            ))}
           </Select>
         </FormControl>
       </Box>
