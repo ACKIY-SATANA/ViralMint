@@ -101,10 +101,46 @@ async def _tool_progress(job_id: str, pct: float, step: str, user_id: str):
 async def _tool_success(
     job_id: str, out_path: Path, cleanup: list[Path], user_id: str,
     extra_output: dict | None = None,
-):
-    """Mark job success, emit job_complete, delete input scratch files."""
+    expect: dict | None = None,
+) -> bool:
+    """Validate the artifact, mark job success, emit job_complete, delete
+    input scratch files. Returns True when the artifact was delivered, False
+    when the validation gate failed the job instead.
+
+    `expect` (all optional): {"min_duration": float, "orientation": str,
+    "audio": bool} — assertions the RUNNER makes about its own output, which
+    are fatal on mismatch precisely because the runner declared them. This is
+    the hook the geometry class of bug needs: a blur-fill that shrank the
+    picture, or a reframe that came back landscape, is invisible to an exit
+    code and obvious to ffprobe.
+
+    Returning bool matters for runners that do more work after this call —
+    they must be able to tell "delivered" from "gate-failed".
+    """
     from backend.agents.job_helper import update_job_status
+    from backend.core.exceptions import GenerationError
     from backend.core.ws_manager import ws_manager
+    from backend.services.output_validator import validate_output
+
+    # "Verify the artifact before you call it done", as code, at the one point
+    # every file-producing tool passes through. A runner that finishes without
+    # raising has NOT proved it made something playable — Audio Enhance once
+    # reported success over a 0-byte mp3, and each such bug got its own fix
+    # afterwards, which means the next one waits for the next audit. Only
+    # unambiguous breakage is fatal here (see output_validator's docstring);
+    # soft findings never block.
+    verdict = await validate_output(out_path, expect)
+    if not verdict.ok:
+        logger.warning(
+            "tool job %s produced an invalid artifact (%s): %s",
+            job_id, verdict.fatal_issues[0].check, out_path,
+        )
+        await _tool_fail(
+            job_id, GenerationError(verdict.message()), cleanup, user_id,
+            "output_validation",
+        )
+        return False
+
     output_data = {"file": str(out_path)}
     if extra_output:
         output_data.update(extra_output)
@@ -115,6 +151,7 @@ async def _tool_success(
         "result": {"download_url": f"/api/tools/download/{job_id}"},
     }, user_id)
     _cleanup_paths(*cleanup)
+    return True
 
 
 async def _tool_fail(job_id: str, err: Exception, cleanup: list[Path], user_id: str, tool: str):
@@ -216,7 +253,11 @@ async def run_tool_reframe(job_id: str, in_path: Path, user_id: str = "local"):
             if not out_path.exists():
                 raise RuntimeError("Reframe produced no output")
 
-        await _tool_success(job_id, out_path, cleanup, user_id)
+        # The one thing this tool exists to guarantee. Geometry is invisible
+        # to an exit code and obvious to ffprobe: a blur-fill that shrank the
+        # picture or a convert that came back landscape both "succeed".
+        await _tool_success(job_id, out_path, cleanup, user_id,
+                            expect={"orientation": "portrait"})
         logger.info("TASK DONE  tool:reframe | job=%s", job_id[:8])
     except Exception as e:
         await _tool_fail(job_id, e, cleanup, user_id, "reframe")
