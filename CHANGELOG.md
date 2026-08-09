@@ -33,7 +33,77 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   of throwaway failed statements on an already-current database. Startup now
   reads each table's columns once and skips those ALTERs entirely.
 
+### Added
+- **A job can no longer report success on a broken artifact.** Every
+  file-producing tool now passes its output through one gate before the job is
+  marked successful: the file must exist, be non-empty, be readable by ffprobe,
+  carry the kind of stream its own extension promises, and have a duration.
+  Tools that know more assert more — reframe now declares that its output must
+  be portrait, which is the class of failure an exit code cannot see. Broken
+  output fails the job with a sentence naming what's wrong instead of handing
+  you a download that doesn't play.
+
 ### Fixed
+- **Captions stop being burned under the platform's own UI.** Caption margins
+  were pixel offsets tuned for a 1920-tall frame and nothing ever checked them
+  against the interface TikTok/Reels/Shorts draw *on top of* the video. Three
+  styles (Classic, Minimal, Karaoke) sat inside the band covered by the
+  username, caption and music ticker — unreadable, and impossible to fix after
+  export. A platform safe zone is now applied as a **floor**: styles that
+  already clear the chrome are untouched, only the unsafe ones move, and the
+  insets are fractions of the frame so they hold on a square, a 4:5 or a 4K
+  render. The hook overlay gets the same treatment against the top bar.
+- **Square videos got vertical caption geometry.** The tool runners' aspect
+  probe was binary ("is it landscape?"), so a 1080x1080 file was treated as
+  9:16 — wrong margins, wrong font size, and the vertical chrome inset a
+  square feed post doesn't need.
+- **Imported and translated subtitle cues no longer merge or drift.** Cues
+  written back-to-back rendered as one long caption line showing text long
+  before its own cue time, and overlapping cues (rolling auto-captions overlap
+  by construction) pushed the timeline further out with every cue — a 200-cue
+  import produced a caption track roughly twice the video's length, so the
+  back half never rendered and everything before it desynced.
+- **The caption style list is served from the render engine.** `/api/captions/
+  styles` was a hand-maintained copy and had drifted: 7 of 10 styles, with four
+  of them advertising a centre alignment the renderer never produces. Custom
+  and AI-generated styles are also forced onto a bottom alignment, without
+  which the safe-zone floor silently does nothing.
+- **Cancelling a clip extraction actually cancels it.** Cancel only flipped the
+  database row; the pipeline kept burning Whisper, the AI call and N parallel
+  ffmpeg re-encodes, saved every clip, and overwrote "cancelled" with
+  "success". It now stops at the next phase boundary, deletes the clips it had
+  already produced, and stays cancelled.
+- **Clip files orphaned by a crash are swept.** Clips are written straight into
+  the generated-media directory under their final names, so a backend killed
+  mid-run leaked them forever. A boot-time sweep reclaims `clip_*` files older
+  than 24h that no library row references — including, deliberately, cached
+  16:9 exports, which are themselves `clip_*` files referenced by a different
+  column.
+- **A manual cut with captions off no longer transcribes the whole source.**
+  Hand-picked ranges need no transcript unless captions or silence-removal
+  consume it, but Whisper ran anyway — on the first cut of a newly imported
+  video that meant minutes of work to produce a seven-second trim.
+- **"Remove silence & filler words" works for hand-picked ranges.** The option
+  was gated out of manual mode on the theory that it would shift the user's
+  chosen timing. It doesn't: silence is removed *inside* each already-cut clip,
+  so the picked boundaries are untouched. The gate only made hand-picked clips
+  the one place pacing couldn't be tightened.
+- **Audio enhancement stopped degrading already-clean audio.** Single-pass
+  loudness normalisation runs a different algorithm that rides the gain
+  continuously — audible pumping, and it crushed loudness range a little more
+  on every pass. Enhancement is now measure-then-apply with a single fixed
+  gain, and audio already at target is returned untouched instead of being
+  re-processed.
+- **Background music you can actually hear.** The music bed sat 20dB down,
+  which measured as a 0.1dB change to the finished mix — reported as "no
+  background music", because there effectively wasn't any.
+- **Silent substitutions now announce themselves.** Picking a music genre with
+  no matching track quietly used any track at all, and a voice provider
+  without a key quietly narrated in a different voice. Both now say so.
+- **Aspect conversion stops re-encoding audio.** Audio is untouched by a
+  geometry change, but every reframe/export paid a lossy generation for it,
+  and chained tools stacked them.
+
 - **Downloads use whatever JavaScript runtime the machine has.** yt-dlp was
   handed a hardcoded `node`, and passing that option *replaces* yt-dlp's own
   default — so a machine with deno but not Node ended up with no runtime at
