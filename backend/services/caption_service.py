@@ -14,6 +14,7 @@ from pathlib import Path
 
 from backend.config import settings
 from backend.core.exceptions import VideoGenerationError
+from backend.services import safe_zones
 
 logger = logging.getLogger(__name__)
 
@@ -542,11 +543,18 @@ def _build_ass_header(
     aspect_ratio: str,
     resolution: tuple[int, int],
     include_hook_style: bool = False,
+    platform: str | None = None,
+    respect_safe_zone: bool = True,
 ) -> str:
     """Build ASS file header with style definitions.
 
     When include_hook_style is True, appends a `Style: Hook` entry used by
     the hook-line overlay (see `_build_hook_event`).
+
+    Margins are raised, never lowered, to clear the destination platform's UI
+    (see `safe_zones`). `platform` narrows the zone when the caller knows
+    where the video is going; `respect_safe_zone=False` opts out entirely for
+    a caller that genuinely wants text in the chrome band.
     """
     style = style_config
     width, height = resolution
@@ -561,11 +569,28 @@ def _build_ass_header(
     margin_v_key = "margin_v_portrait" if is_portrait else "margin_v_landscape"
     margin_v = style.get(margin_v_key) or style.get("margin_v") or 80
 
+    # Platform safe zone. A FLOOR, not a setting: a style that already clears
+    # the chrome is left exactly where its designer put it, and only the ones
+    # that would be burned underneath the app's own UI move — by the minimum
+    # distance needed. Custom styles from the DB go through the same floor,
+    # including AI-generated ones, which is where an unreviewed low margin is
+    # most likely to come from.
+    #
+    # `pad` is the outline + shadow: libass draws both OUTSIDE the text box,
+    # so the visible bottom of the glyphs sits below MarginV.
+    if respect_safe_zone:
+        pad = int(style.get("outline_width", 0) or 0) + int(style.get("shadow_depth", 0) or 0)
+        margin_v = max(margin_v, safe_zones.min_margin_v(aspect_ratio, height, platform, pad))
+
     # Hook style: top-center, bold, big, white with thick black outline. Sized
     # ~2.2x caption font so it reads as the scroll-stopper even on bright
     # backgrounds. Alignment=8 is top-center in ASS numbering.
     hook_font_size = int(font_size * 2.2)
+    # Alignment=8 makes this a TOP margin, so it clears the status bar / tab
+    # row rather than the bottom chrome.
     hook_margin_v = 200 if aspect_ratio == "9:16" else 80
+    if respect_safe_zone:
+        hook_margin_v = max(hook_margin_v, safe_zones.min_margin_top(aspect_ratio, height, platform, 6))
     hook_style_line = (
         f"Style: Hook,{style['font']},{hook_font_size},&H00FFFFFF,&H000000FF,"
         f"&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6,2,8,40,40,{hook_margin_v},1\n"
@@ -623,6 +648,12 @@ def _build_hook_event(hook_text: str, hook_duration: float) -> str:
     return f"Dialogue: 0,0:00:00.00,{end_ts},Hook,,0,0,0,,{{\\fad(300,500)}}{clean}\n"
 
 
+# How long a fully-overlapped segment gets at the tail of its own window.
+# Long enough to read, short enough that stacked rolling captions don't all
+# collide on the same instant.
+_OVERLAP_TAIL_SECONDS = 0.6
+
+
 def _extract_word_timestamps(segments: list[dict]) -> list[dict]:
     """
     Extract flat list of words with timestamps from Whisper segments.
@@ -677,13 +708,41 @@ def _extract_word_timestamps(segments: list[dict]) -> list[dict]:
                 continue
             if seg_end <= seg_start:
                 seg_end = seg_start + len(seg_words) * 0.3  # ~300ms per word fallback
-            duration = seg_end - seg_start
-            per_word = duration / len(seg_words)
+            # Spread the words across the window this segment ACTUALLY has
+            # left, and never let one run past the segment's own end.
+            #
+            # Segments reaching this path overlap by construction — imported
+            # subtitle cues (YouTube auto-captions roll, repeating text across
+            # cues), translated sentences, scripted lines. The old math took
+            # `per_word` from the segment's FULL duration but derived `w_end`
+            # from the overlap-clamped `w_start`, so every overlapping segment
+            # pushed the cursor past its own seg_end and the error COMPOUNDED:
+            # a 200-cue import produced a caption track twice the video's
+            # length, so the back half never rendered and everything before it
+            # drifted. Clamping `last_end` to seg_end is what makes the error
+            # non-accumulating.
+            win_start = max(seg_start, min(last_end, seg_end))
+            avail = seg_end - win_start
+            if avail <= 0:
+                # Fully swallowed by the previous segment. Show it in this
+                # segment's own tail rather than borrowing time from the next.
+                win_start = max(seg_start, seg_end - _OVERLAP_TAIL_SECONDS)
+                avail = max(seg_end - win_start, 0.001)
+            per_word = avail / len(seg_words)
             for i, w in enumerate(seg_words):
-                w_start = max(seg_start + i * per_word, last_end)
-                w_end = w_start + per_word
+                w_start = win_start + i * per_word
+                w_end = min(w_start + per_word, seg_end)
                 last_end = w_end
                 words.append({"text": w, "start": w_start, "end": w_end})
+            # A wordless segment IS a meaningful unit — an imported subtitle
+            # cue, a translated sentence, a scripted line. Mark its boundary
+            # so the line grouper never glues two of them into one caption
+            # (cues authored back-to-back — zero gap, no closing punctuation —
+            # trip none of the grouper's break rules and rendered as a single
+            # long line, showing text long before its own cue time). Whisper's
+            # worded path above stays unmarked: its segment bounds are
+            # arbitrary and the pause/punctuation rules handle it better.
+            words[-1]["line_break"] = True
 
     return [w for w in words if w.get("text")]
 
@@ -734,6 +793,7 @@ def _group_words_into_lines(
                 or cur_chars + 1 + len(text) > max_chars
                 or gap > _PAUSE_BREAK_S
                 or prev_token.endswith(_SENTENCE_END)
+                or prev.get("line_break")   # segment/cue boundary — author's break
             ):
                 lines.append(cur)
                 cur = []
@@ -756,6 +816,7 @@ def _group_words_into_lines(
             prev_chars = sum(len(w["text"]) for w in prev) + len(prev) - 1
             if (
                 not prev_token.endswith(_SENTENCE_END)
+                and not prev[-1].get("line_break")  # never fold across a cue boundary
                 and gap <= _PAUSE_BREAK_S
                 and len(prev) + 1 <= max_words + 2
                 and prev_chars + 1 + len(line[0]["text"]) <= max_chars
@@ -832,6 +893,8 @@ async def generate_captions_ass(
     emoji_style: str = "moderate",
     hook_text: str | None = None,
     hook_duration: float = 2.5,
+    platform: str | None = None,
+    respect_safe_zone: bool = True,
 ) -> Path:
     """
     Generate ASS subtitle file with word-by-word animation.
@@ -848,6 +911,11 @@ async def generate_captions_ass(
                    Used to surface clip_extractor's `hook` field as a
                    scroll-stopper overlay.
         hook_duration: Seconds the hook stays on screen.
+        platform: Optional destination ("tiktok", …) — narrows the safe zone
+                  (see `safe_zones`). Omit and vertical output gets the
+                  conservative zone that clears every vertical platform.
+        respect_safe_zone: Set False to place text exactly where the style
+                  says, even if the platform's UI will cover it.
 
     Returns:
         Path to the generated ASS file.
@@ -888,7 +956,11 @@ async def generate_captions_ass(
         style_config = {**style_config, "font": fallback_font}
 
     # Build ASS file. include_hook_style only when we'll actually emit a hook event.
-    header = _build_ass_header(style_config, aspect_ratio, resolution, include_hook_style=bool(hook_event))
+    header = _build_ass_header(
+        style_config, aspect_ratio, resolution,
+        include_hook_style=bool(hook_event),
+        platform=platform, respect_safe_zone=respect_safe_zone,
+    )
     events = _generate_ass_events(words, style_config) if words else ""
 
     content = header + hook_event + events + "\n"

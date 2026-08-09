@@ -33,22 +33,17 @@ logger = logging.getLogger(__name__)
 
 # ── Shared helpers ─────────────────────────────────────────────────────────
 
-def _probe_aspect_ratio_sync(video_path: Path) -> str:
-    try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height", "-of", "csv=p=0", str(video_path)],
-            capture_output=True, text=True, timeout=10,
-        )
-        w, h = map(int, r.stdout.strip().split(","))
-        return "16:9" if w > h else "9:16"
-    except Exception:
-        return "9:16"
-
-
 async def _probe_aspect_ratio(video_path: Path) -> str:
-    """Return '9:16' for portrait, '16:9' otherwise. Defaults to 9:16."""
-    return await asyncio.to_thread(_probe_aspect_ratio_sync, video_path)
+    """Return '9:16' / '16:9' / '1:1' for the file's real dimensions.
+
+    Delegates to `video_utils.aspect_label` — the probe here used to be binary
+    ("is it landscape?"), so a SQUARE video got 9:16 caption geometry: wrong
+    margins and font size, and since the safe-zone floor it would also get the
+    vertical chrome inset a 1:1 feed post doesn't need. Same repair
+    clip_extractor already received. Defaults to 9:16 on probe failure.
+    """
+    from backend.services.video_utils import aspect_label
+    return await asyncio.to_thread(aspect_label, video_path)
 
 
 # 9:16 as a ratio, with a 2% tolerance so 1079x1920 or 1080x1918 still counts.

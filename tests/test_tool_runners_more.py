@@ -19,6 +19,7 @@ All I/O is mocked; the suite is fast and hermetic.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -155,18 +156,38 @@ class TestResolveMergeTarget:
         assert label == "9:16"
 
 
-class TestProbeAspectRatioSync:
+class TestProbeAspectRatio:
+    """The tool runners' shared probe delegates to `video_utils.aspect_label`.
+
+    It used to be binary — "is it landscape?" — so a SQUARE video came back
+    9:16 and got vertical caption geometry: wrong margins, wrong font size,
+    and (since the safe-zone floor) the vertical chrome inset that a 1:1 feed
+    post doesn't need. Both call sites feed generate_captions_ass, which
+    already handles "1:1".
+    """
+
+    def _probe(self, dims):
+        from backend.services import video_utils
+        with patch.object(video_utils, "probe_media", return_value=(*dims, 0.0)):
+            return asyncio.run(trun._probe_aspect_ratio(Path("/x.mp4")))
+
     def test_landscape(self):
-        with patch("subprocess.run", return_value=MagicMock(stdout="1920,1080\n")):
-            assert trun._probe_aspect_ratio_sync(Path("/x.mp4")) == "16:9"
+        assert self._probe((1920, 1080)) == "16:9"
 
     def test_portrait(self):
-        with patch("subprocess.run", return_value=MagicMock(stdout="1080,1920\n")):
-            assert trun._probe_aspect_ratio_sync(Path("/x.mp4")) == "9:16"
+        assert self._probe((1080, 1920)) == "9:16"
+
+    def test_square_is_not_called_portrait(self):
+        assert self._probe((1080, 1080)) == "1:1"
 
     def test_error_defaults_to_portrait(self):
-        with patch("subprocess.run", side_effect=RuntimeError("boom")):
-            assert trun._probe_aspect_ratio_sync(Path("/x.mp4")) == "9:16"
+        from backend.services import video_utils
+        with patch.object(video_utils, "probe_media", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                asyncio.run(trun._probe_aspect_ratio(Path("/x.mp4")))
+
+    def test_unprobeable_file_defaults_to_portrait(self):
+        assert self._probe((0, 0)) == "9:16"
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -12,6 +12,7 @@ from backend.database import AsyncSessionLocal
 from backend.models.caption_style import CaptionStyle
 from backend.models.user_settings import UserSettings
 from backend.core.ai_provider import get_ai_client
+from backend.services.caption_service import CAPTION_STYLES as _CAPTION_STYLE_DEFS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -55,14 +56,54 @@ class AIGenerateRequest(BaseModel):
 
 # ── Built-in styles (returned alongside custom ones) ─────────────────────────
 
+# DERIVED from `caption_service.CAPTION_STYLES` — the rendering source of
+# truth — so the picker's preview params can never drift from what ffmpeg
+# actually burns. This list was a hand-maintained copy once, and it drifted
+# exactly as predicted: it still advertised 7 of the engine's 10 general
+# styles (the urban / warm / mono pack was never copied in), and the params it
+# did carry were stale — `alignment: 5` on four styles, which libass pins to
+# the literal middle of the frame while IGNORING margin_v, plus margin values
+# from before the portrait/landscape split. Only the human-facing name +
+# description stay literal here.
+#
+# `margin_v` is the style's DECLARED portrait margin. The renderer
+# additionally applies a platform safe-zone FLOOR (services/safe_zones.py), so
+# classic / minimal / karaoke burn higher than this number on vertical output
+# — their declared values sit under TikTok's caption bar. Don't "resolve" that
+# difference by lowering the floor; the floor is the bug fix.
+#
+# `brainrot` is excluded on purpose — it's the Brainrot format's own look,
+# applied by its own pipeline, not a general preset.
+_STYLE_DISPLAY = {
+    "viral":   ("Viral",      "Word-by-word yellow highlight, lower-third"),
+    "classic": ("Classic",    "Full sentence at bottom, no highlight"),
+    "bold":    ("Bold",       "Impact font, green highlight, 2 words"),
+    "neon":    ("Neon",       "Pink/cyan neon glow"),
+    "minimal": ("Minimal",    "Subtle, long phrases"),
+    "karaoke": ("Karaoke",    "Gray-to-yellow karaoke sweep"),
+    "glow":    ("Glow",       "Orange-gold glow effect"),
+    "urban":   ("Bold Urban", "Arial Black, heavy outline, orange pop"),
+    "warm":    ("Warm Glow",  "Georgia serif, cream & amber, cozy"),
+    "mono":    ("Monochrome", "Verdana, grey highlight, clean editorial"),
+}
+
+_STYLE_PARAM_KEYS = (
+    "font", "font_size_portrait", "font_size_landscape", "primary_color",
+    "highlight_color", "outline_color", "outline_width", "shadow_depth",
+    "alignment", "words_per_group",
+)
+
 BUILTIN_STYLES = [
-    {"id": "viral", "name": "Viral", "builtin": True, "font": "Arial Bold", "font_size_portrait": 56, "font_size_landscape": 42, "primary_color": "&H00FFFFFF", "highlight_color": "&H0000FFFF", "outline_color": "&H00000000", "outline_width": 3, "shadow_depth": 1, "alignment": 5, "margin_v": 80, "words_per_group": 3, "description": "Word-by-word yellow highlight, centered"},
-    {"id": "classic", "name": "Classic", "builtin": True, "font": "Arial", "font_size_portrait": 42, "font_size_landscape": 32, "primary_color": "&H00FFFFFF", "highlight_color": "&H00FFFFFF", "outline_color": "&H00000000", "outline_width": 2, "shadow_depth": 0, "alignment": 2, "margin_v": 40, "words_per_group": 8, "description": "Full sentence at bottom, no highlight"},
-    {"id": "bold", "name": "Bold", "builtin": True, "font": "Impact", "font_size_portrait": 64, "font_size_landscape": 48, "primary_color": "&H00FFFFFF", "highlight_color": "&H0000FF00", "outline_color": "&H00000000", "outline_width": 4, "shadow_depth": 2, "alignment": 5, "margin_v": 60, "words_per_group": 2, "description": "Impact font, green highlight, 2 words"},
-    {"id": "neon", "name": "Neon", "builtin": True, "font": "Arial Bold", "font_size_portrait": 58, "font_size_landscape": 44, "primary_color": "&H00FFAAFF", "highlight_color": "&H0000FFFF", "outline_color": "&H00330033", "outline_width": 3, "shadow_depth": 2, "alignment": 5, "margin_v": 70, "words_per_group": 3, "description": "Pink/cyan neon glow"},
-    {"id": "minimal", "name": "Minimal", "builtin": True, "font": "Arial", "font_size_portrait": 40, "font_size_landscape": 30, "primary_color": "&H00FFFFFF", "highlight_color": "&H00FFFFFF", "outline_color": "&H00333333", "outline_width": 1, "shadow_depth": 0, "alignment": 2, "margin_v": 30, "words_per_group": 10, "description": "Subtle, long phrases"},
-    {"id": "karaoke", "name": "Karaoke", "builtin": True, "font": "Arial Bold", "font_size_portrait": 52, "font_size_landscape": 40, "primary_color": "&H00AAAAAA", "highlight_color": "&H0000FFFF", "outline_color": "&H00000000", "outline_width": 3, "shadow_depth": 1, "alignment": 2, "margin_v": 50, "words_per_group": 5, "description": "Gray-to-yellow karaoke sweep"},
-    {"id": "glow", "name": "Glow", "builtin": True, "font": "Arial Bold", "font_size_portrait": 60, "font_size_landscape": 46, "primary_color": "&H00FFFFFF", "highlight_color": "&H0066CCFF", "outline_color": "&H000066CC", "outline_width": 4, "shadow_depth": 3, "alignment": 5, "margin_v": 75, "words_per_group": 3, "description": "Orange-gold glow effect"},
+    {
+        "id": sid,
+        "name": _STYLE_DISPLAY[sid][0],
+        "builtin": True,
+        "description": _STYLE_DISPLAY[sid][1],
+        "margin_v": _CAPTION_STYLE_DEFS[sid]["margin_v_portrait"],
+        **{k: _CAPTION_STYLE_DEFS[sid][k] for k in _STYLE_PARAM_KEYS},
+    }
+    for sid in _CAPTION_STYLE_DEFS
+    if sid in _STYLE_DISPLAY
 ]
 
 
