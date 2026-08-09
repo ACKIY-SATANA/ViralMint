@@ -291,7 +291,13 @@ class GeneratorAgent:
             user_settings.music_enabled if user_settings and user_settings.music_enabled is not None else True
         )
         mus_genre = music_genre or (user_settings.music_genre if user_settings else None) or "lofi"
-        mus_vol = user_settings.music_volume_db if user_settings and user_settings.music_volume_db else -20.0
+        mus_vol = user_settings.music_volume_db if user_settings and user_settings.music_volume_db else -14.0
+        # -20.0 is the legacy column default and no UI has ever written this
+        # field — a stored -20 is the old default, not a choice. It measured
+        # as inaudible (0.1dB mean-volume delta on a real render), which users
+        # reported as "no background music". Upgrade it to the audible bed.
+        if mus_vol == -20.0:
+            mus_vol = -14.0
 
         return {
             "tts_provider": tts_enum,
@@ -497,9 +503,29 @@ class GeneratorAgent:
             if not voice:
                 voice = "en-US-AndrewMultilingualNeural"
 
+        async def _warn_voice_swap(why: str):
+            # A render that speaks in a DIFFERENT voice than the one the user
+            # picked must never be silent about it — "the dropdown said X but
+            # the video is someone else" destroys trust in every setting on
+            # the page. Same rule as everywhere: degrade loudly.
+            try:
+                from backend.core.ws_manager import ws_manager
+                await ws_manager.send_constraint_warning(
+                    constraint="tts_fallback",
+                    severity="warning",
+                    message=(
+                        f"Your selected voice ({opts['tts_label']}) wasn't "
+                        f"available — {why} The video was narrated with the "
+                        f"free Edge voice instead."
+                    ),
+                )
+            except Exception as ws_exc:
+                logger.warning(f"tts_fallback WS emit failed: {ws_exc}")
+
         # Fall back to free Edge TTS if a paid provider is selected without a key
         if provider != TTSProvider.EDGE_TTS and not api_key:
             logger.warning(f"{opts['tts_label']} key missing — falling back to Edge TTS (free)")
+            await _warn_voice_swap("add its API key in Settings to use it.")
             provider = TTSProvider.EDGE_TTS
             voice = voice or "en-US-AndrewMultilingualNeural"
             api_key = ""
@@ -511,6 +537,7 @@ class GeneratorAgent:
         except Exception as e:
             if provider != TTSProvider.EDGE_TTS:
                 logger.warning(f"TTS failed with {provider}, falling back to Edge TTS: {e}")
+                await _warn_voice_swap("it failed while generating.")
                 return await generate_tts(text=script, provider=TTSProvider.EDGE_TTS, voice_id="en-US-AndrewMultilingualNeural")
             raise
 
@@ -587,10 +614,26 @@ class GeneratorAgent:
         if not music_path:
             return voice_path
 
+        # select_music matches genre by filename glob; when nothing in the
+        # library matches it silently falls back to ANY track — the user
+        # picked "lofi" and got an upbeat sample with no signal that anything
+        # had been substituted. Degrade loudly, never silently.
+        if opts["music_genre"].lower() not in music_path.name.lower():
+            from backend.core.ws_manager import ws_manager
+            await ws_manager.send_constraint_warning(
+                constraint="music_genre_fallback",
+                message=(
+                    f"No {opts['music_genre']} track in your Music Library — "
+                    f"using '{music_path.stem}' instead. Add tracks on the "
+                    f"Music page to get the genre you picked."
+                ),
+                severity="info",
+            )
+
         return await mix_audio(
             voice_path=voice_path,
             music_path=music_path,
-            music_volume_db=opts.get("music_volume_db", -20.0),
+            music_volume_db=opts.get("music_volume_db", -14.0),
         )
 
     @staticmethod

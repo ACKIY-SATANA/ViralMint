@@ -122,12 +122,16 @@ async def mix_audio(
     voice_path: Path,
     music_path: Path,
     output_path: Path = None,
-    music_volume_db: float = -20.0,
+    # -14dB, was -20dB: measured against a real render, the -20dB bed moved
+    # the mix's mean volume by 0.1dB — users reported "no background music"
+    # because there effectively wasn't any. -14dB is a clearly-present bed
+    # that still sits under speech.
+    music_volume_db: float = -14.0,
 ) -> Path:
     """
     Mix voice + background music using FFmpeg.
     Music is:
-    - Lowered to music_volume_db (default -20dB)
+    - Lowered to music_volume_db (default -14dB)
     - Faded in over 1s at start
     - Faded out over 2s at end
     - Trimmed to match voice duration

@@ -45,7 +45,7 @@ class SettingsResponse(BaseModel):
     caption_enabled: bool = True
     music_enabled: bool = True
     music_genre: str = "lofi"
-    music_volume_db: float = -20.0
+    music_volume_db: float = -14.0
     upload_to_youtube: bool = True
     upload_to_tiktok: bool = False
     tiktok_default_privacy: str = "PUBLIC_TO_EVERYONE"
@@ -109,7 +109,7 @@ async def get_settings():
         caption_enabled=s.caption_enabled if s.caption_enabled is not None else True,
         music_enabled=s.music_enabled if s.music_enabled is not None else True,
         music_genre=s.music_genre or "lofi",
-        music_volume_db=s.music_volume_db if s.music_volume_db is not None else -20.0,
+        music_volume_db=s.music_volume_db if s.music_volume_db is not None else -14.0,
         upload_to_youtube=s.upload_to_youtube if s.upload_to_youtube is not None else True,
         upload_to_tiktok=s.upload_to_tiktok or False,
         tiktok_default_privacy=s.tiktok_default_privacy or "PUBLIC_TO_EVERYONE",

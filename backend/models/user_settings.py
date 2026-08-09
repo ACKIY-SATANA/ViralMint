@@ -61,7 +61,7 @@ class UserSettings(Base, TimestampMixin):
     # ── Background Music ───────────────────────────────
     music_enabled = Column(Boolean, default=True)
     music_genre = Column(String(20), default="lofi")  # lofi|cinematic|upbeat|ambient|corporate
-    music_volume_db = Column(Float, default=-20.0)
+    music_volume_db = Column(Float, default=-14.0)
 
     # ── Instagram Upload ───────────────────────────────
     instagram_access_token_encrypted = Column(Text, nullable=True)
