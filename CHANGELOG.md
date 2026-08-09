@@ -103,7 +103,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Aspect conversion stops re-encoding audio.** Audio is untouched by a
   geometry change, but every reframe/export paid a lossy generation for it,
   and chained tools stacked them.
-
 - **Downloads use whatever JavaScript runtime the machine has.** yt-dlp was
   handed a hardcoded `node`, and passing that option *replaces* yt-dlp's own
   default — so a machine with deno but not Node ended up with no runtime at
