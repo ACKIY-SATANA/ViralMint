@@ -160,14 +160,13 @@ class TestDurationBasedClips:
         out = CE._generate_duration_based_clips(5, 3, min_duration=30)
         assert len(out) <= 1
 
-    def test_a_zero_duration_source_yields_a_degenerate_window(self):
-        """Pinning real behaviour. When yt-dlp recorded no duration this
-        returns ONE window of 0s→0s rather than nothing, and because it's
-        non-empty the caller's `if not clip_windows` guard doesn't fire — so a
-        zero-length cut is attempted instead of a clean "can't extract" error."""
-        out = CE._generate_duration_based_clips(0, 5)
-        assert len(out) == 1
-        assert out[0]["start"] == out[0]["end"] == 0
+    def test_a_zero_duration_source_yields_nothing(self):
+        """It used to return ONE 0s→0s window. Non-empty, so the caller's
+        empty-list guard didn't fire and the pipeline attempted a zero-length
+        cut instead of raising the clean "couldn't extract any clips" error.
+        Reachable whenever yt-dlp recorded no duration."""
+        assert CE._generate_duration_based_clips(0, 5) == []
+        assert CE._generate_duration_based_clips(None, 5) == []
 
     def test_the_title_is_carried_onto_each_clip(self):
         out = CE._generate_duration_based_clips(120, 2, title="My Podcast")
@@ -249,43 +248,46 @@ class TestBuildSegmentsText:
         assert len(out) < 2000
         assert "truncated" in out
 
-    def test_the_sampler_can_reach_its_first_skip_marker(self):
+    @pytest.mark.parametrize("n,mc", [(240, 1500), (400, 3000), (2160, 12000)])
+    def test_the_sampler_also_shows_the_end_of_the_video(self, n, mc):
+        """Each window gets its OWN third of the budget. Sharing one budget
+        across the three slices could never work — the branch only engages
+        when the transcript is more than twice the budget, so 75% of the
+        segments cannot fit in it and the output always ran out inside the
+        FIRST quarter."""
         segs = [{"start": i * 20, "end": i * 20 + 9, "text": f"seg {i}"}
-                for i in range(240)]
-        out = CE._build_segments_text(segs, duration=4800, max_chars=1500)
-        assert out.count("segments omitted") == 1
+                for i in range(n)]
+        out = CE._build_segments_text(segs, duration=n * 20, max_chars=mc)
+        assert out.count("segments omitted") == 2
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "GAP: the sampler's second half is unreachable BY CONSTRUCTION. It "
-        "engages only when total_text > 2*max_chars, i.e. the budget is under "
-        "half the transcript — but reaching the SECOND marker requires the "
-        "first two quarters (half the segments) to fit INSIDE that budget. "
-        "The two conditions can't both hold, so the last-quarter slice is "
-        "never emitted: the model never sees the END of a long video"))
-    def test_the_sampler_also_shows_the_end_of_the_video(self):
-        for n, mc in ((240, 1500), (400, 3000), (2160, 12000)):
-            segs = [{"start": i * 20, "end": i * 20 + 9, "text": f"seg {i}"}
-                    for i in range(n)]
-            out = CE._build_segments_text(segs, duration=n * 20, max_chars=mc)
-            if out.count("segments omitted") == 2:
-                return
-        raise AssertionError("no input reaches the second skip marker")
-
-    @pytest.mark.xfail(strict=True, reason=(
-        "GAP: on a REAL long video the sampler is defeated by its own budget. "
-        "It slices [first quarter | marker | middle | marker | last quarter] "
-        "and THEN truncates at max_chars — but a 3-hour podcast's first "
-        "quarter alone (~540 segments) far exceeds the 12000-char default, so "
-        "the output truncates inside it. Measured: the model is handed the "
-        "first ~860s of a 10800s video, and clip selection therefore only "
-        "ever considers the opening ~14 minutes"))
     def test_a_three_hour_podcast_is_sampled_across_its_whole_length(self):
+        """The regression that motivated the fix: the model was handed the
+        first ~860s of a 10800s video, so clip selection only ever considered
+        the opening ~14 minutes."""
         segs = [{"start": i * 5, "end": i * 5 + 4.5,
                  "text": "This is roughly what a whisper segment looks like ok"}
                 for i in range(2160)]                       # ~3 hours
         out = CE._build_segments_text(segs, duration=10800)  # default max_chars
-        assert "segments omitted" in out, (
-            "the model only sees the first %s" % out.splitlines()[-1])
+        assert out.count("segments omitted") == 2
+        last_start = float(out.splitlines()[-1].split("s -")[0].strip("["))
+        assert last_start > 10000, (
+            f"the model only sees up to {last_start}s of a 10800s video")
+
+    @pytest.mark.parametrize("mc", [3000, 6000, 12000])
+    def test_the_sampled_output_respects_the_caller_s_budget(self, mc):
+        """Including the two marker lines and the joining newlines."""
+        segs = [{"start": i * 5, "end": i * 5 + 4.5, "text": "a segment here ok"}
+                for i in range(2160)]
+        assert len(CE._build_segments_text(segs, duration=10800, max_chars=mc)) <= mc
+
+    def test_the_closing_window_ends_on_the_videos_last_segment(self):
+        """Filling the final window forwards would show the START of the last
+        quarter and stop — just a fourth truncation point. It fills backwards
+        so what the model sees is the actual ending."""
+        segs = [{"start": i * 5, "end": i * 5 + 4.5, "text": "a segment here ok"}
+                for i in range(2160)]
+        out = CE._build_segments_text(segs, duration=10800)
+        assert out.splitlines()[-1].startswith("[10795.0s")
 
     def test_a_short_video_is_never_sampled(self):
         segs = [{"start": i, "end": i + 1, "text": "hi"} for i in range(10)]
@@ -345,17 +347,12 @@ class TestFindSilentGaps:
             min_gap_duration=5.0, max_clip_duration=30.0, budget=2)
         assert len(out) <= 2
 
-    def test_a_zero_budget_still_yields_one_window(self):
-        """Pinning real behaviour, and noting it's a latent off-by-one rather
-        than a live bug: the budget is applied as a slice cap after the first
-        candidate is built, so budget=0 returns one. Unreachable today — the
-        only caller invokes this when `len(clip_windows) < max_clips`, so the
-        budget is always at least 1 — but a future caller passing 0 would get
-        a clip it didn't ask for."""
-        out = CE._find_silent_gaps(
+    def test_a_zero_budget_returns_nothing(self):
+        """The cap used to be applied as a slice AFTER the first candidate was
+        built, so budget=0 returned one window the caller didn't ask for."""
+        assert CE._find_silent_gaps(
             segments=self.SEGS, clip_windows=[], duration=200,
-            min_gap_duration=10.0, max_clip_duration=60.0, budget=0)
-        assert len(out) <= 1
+            min_gap_duration=10.0, max_clip_duration=60.0, budget=0) == []
 
     def test_gaps_shorter_than_the_minimum_are_ignored(self):
         tight = [{"start": 0.0, "end": 10.0, "text": "a"},

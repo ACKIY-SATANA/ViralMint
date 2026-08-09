@@ -285,14 +285,11 @@ class TestTemplates:
         assert client.get("/api/templates",
                           params={"mode": "stock"}).status_code == 200
 
-    def test_deleting_an_unknown_template_reports_200_with_an_error_body(self, client):
-        """Pinning real behaviour, and flagging the inconsistency: every other
-        delete in the API 404s on a missing row, but this one returns 200 with
-        `{"error": ...}`. A client checking `response.ok` — which is what the
-        frontend does — reads a failed delete as a success."""
-        r = client.delete("/api/templates/nope")
-        assert r.status_code == 200
-        assert r.json().get("error") == "Template not found"
+    def test_deleting_an_unknown_template_is_a_404(self, client):
+        """It used to return 200 with an `{"error": ...}` body, where every
+        other delete in the API 404s. The frontend checks `response.ok`, so a
+        failed delete read as a success and the row silently stayed."""
+        assert client.delete("/api/templates/nope").status_code == 404
 
 
 # ══════════════════════════════════════════════════════════════════════

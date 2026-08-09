@@ -287,6 +287,27 @@ async def batch_download_from_urls(body: dict = None):
     if len(urls) > 20:
         raise HTTPException(status_code=400, detail="Maximum 20 videos per batch")
 
+    # Accept a bare list of URL strings as well as the documented list of
+    # objects. Callers reach for `["https://…"]` constantly (it's the obvious
+    # shape), and it used to hit `u.get()` on a str — a 500 with an
+    # AttributeError instead of anything the caller could act on. Normalise
+    # here so the rest of the handler sees one shape.
+    normalized = []
+    for u in urls:
+        if isinstance(u, str):
+            normalized.append({"url": u.strip(), "title": ""})
+        elif isinstance(u, dict):
+            normalized.append(u)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"Each entry must be a URL string or an object with a "
+                        f"`url` field, got {type(u).__name__}"),
+            )
+    urls = [u for u in normalized if (u.get("url") or "").strip()]
+    if not urls:
+        raise HTTPException(status_code=400, detail="No usable URLs provided")
+
     from backend.agents.job_helper import create_job
     from backend.core.task_runner import run_batch_download_urls, dispatch
 
@@ -344,6 +365,14 @@ async def import_local_video(
                 dest_path.unlink(missing_ok=True)
                 raise HTTPException(413, "File too large. Maximum upload size is 2GB.")
             f.write(chunk)
+
+    # An empty upload is not an import. The size was capped above but never
+    # floored, so a zero-byte file became a Library row pointing at zero bytes
+    # — it would fail later in whatever tool the user pointed at it, with no
+    # hint that the import itself was the problem.
+    if file_size == 0:
+        dest_path.unlink(missing_ok=True)
+        raise HTTPException(400, "The uploaded file is empty.")
 
     file_size_mb = round(file_size / (1024 * 1024), 2)
     display_title = title or Path(file.filename).stem if file.filename else "Imported video"

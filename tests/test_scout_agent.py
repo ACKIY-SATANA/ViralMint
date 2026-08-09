@@ -340,17 +340,47 @@ class TestViralityScoreShape:
                       upload_date=datetime.utcnow() - timedelta(days=900))
         assert compute_virality_score(fresh) >= compute_virality_score(old)
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "GAP: compute_virality_score does max(video.get('likes', 0), 0), which "
-        "raises TypeError on a string metric — and the scoring loop in "
-        "ScoutAgent.run is NOT wrapped, unlike the outlier enrichment "
-        "immediately above it. So one string-typed field kills the whole "
-        "scout, which is exactly what rule #10 forbids. Reachable via the AI "
-        "raw-search fallbacks: both _ai_parse_fallback (tikhub_client) and "
-        "_ai_raw_search_fallback (scout) pass model-produced values straight "
-        "into these fields, and a model emitting \"1000\" instead of 1000 is "
-        "entirely ordinary"))
     def test_a_string_metric_does_not_crash_the_scorer(self):
-        """Platform payloads are not consistently typed."""
+        """Platform payloads are not consistently typed. Both AI raw-search
+        fallbacks pass model-produced values straight into these fields, and a
+        model emitting "1000" instead of 1000 is entirely ordinary. This used
+        to raise TypeError out of an unguarded scoring loop and kill the whole
+        scout."""
         assert compute_virality_score(
             {"platform": "tiktok", "views": "1000", "likes": "10"}) >= 0
+
+    @pytest.mark.parametrize("junk", [
+        {"views": "1.2M", "likes": "many"},
+        {"views": None, "likes": None},
+        {"views": [], "likes": {}},
+        {"views": float("inf"), "likes": float("nan")},
+        # The outlier inputs come from the same untrusted payloads and hit the
+        # same `"1000" < 1` comparison two lines further down.
+        {"views": 1000, "channel_avg_views": "800"},
+        {"views": 1000, "subscriber_count": "50000"},
+        {"views": 1000, "subscriber_count": []},
+    ])
+    def test_no_shape_of_junk_metric_raises(self, junk):
+        assert compute_virality_score({"platform": "tiktok", **junk}) >= 0
+
+    def test_the_side_data_it_writes_back_is_still_numeric(self):
+        """It stores views_per_hour / outlier_score on the dict for the DB —
+        coercing the inputs must not leak a string into those columns."""
+        row = {"platform": "youtube", "views": "12000", "likes": "450",
+               "subscriber_count": "50000"}
+        compute_virality_score(row)
+        assert isinstance(row["views_per_hour"], float)
+        assert isinstance(row["outlier_score"], float)
+
+    def test_a_row_with_string_metrics_still_saves_alongside_the_others(
+            self, bus, platforms):
+        """Rule #10, at the scoring step. The outlier enrichment above it was
+        already guarded; this loop wasn't, so one string-typed metric — the
+        reachable case, straight out of an AI fallback — took the whole scout
+        down before anything was persisted."""
+        platforms["outcomes"]["youtube"] = [
+            _result("good"),
+            _result("stringy", views="12000", likes="450"),
+        ]
+        _run(niche="string-metrics", plats=["youtube"])
+        assert asyncio.run(_saved_count("string-metrics")) == 2

@@ -334,15 +334,26 @@ class TestDispatchRobustness:
         whole conversation down with it."""
         self._run(action)
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "GAP: `content_calendar` passes the model's `days` straight into "
-        "generate_content_calendar, which uses it as an integer — so a model "
-        "emitting \"seven\" instead of 7 raises TypeError out of "
-        "_dispatch_action and takes the whole chat turn down. Every other "
-        "action either ignores a wrongly-typed payload or degrades; this one "
-        "is the only unguarded coercion"))
-    def test_a_non_numeric_day_count_does_not_crash_the_turn(self, bus):
-        self._run({"type": "content_calendar", "days": "seven"})
+    @pytest.mark.parametrize("days", ["seven", None, [], {"a": 1}, "12"])
+    def test_a_wrongly_typed_day_count_does_not_crash_the_turn(self, bus, days):
+        """`days` comes from the model and is used as an integer downstream.
+        This was the only unguarded coercion in the dispatcher — a "seven"
+        raised TypeError and took the whole chat turn with it."""
+        self._run({"type": "content_calendar", "days": days})
+
+    def test_an_absurd_day_count_is_clamped(self, bus, monkeypatch):
+        """A model asking for 10000 days would ask the AI for a 27-year
+        content plan."""
+        seen = {}
+
+        async def spy(self, user_id, days):
+            seen["days"] = days
+            return None
+        monkeypatch.setattr(
+            "backend.core.user_intelligence.UserIntelligence.generate_content_calendar",
+            spy)
+        self._run({"type": "content_calendar", "days": 10000})
+        assert seen["days"] <= 90
 
     def test_a_wizard_action_with_no_id_is_inert(self, bus):
         self._run({"type": "start_wizard"})

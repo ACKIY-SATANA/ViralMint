@@ -948,6 +948,16 @@ def _generate_duration_based_clips(
     Generate evenly-spaced clip windows for videos without speech.
     Falls back to splitting by duration rather than transcript analysis.
     """
+    # A source with no usable length has no clips in it. Returning a window
+    # here would be a 0s→0s "Full clip": non-empty, so the caller's
+    # `if not clip_windows` guard doesn't fire, and the pipeline goes on to
+    # attempt a zero-length ffmpeg cut instead of raising the clean
+    # "couldn't extract any clips" error the user needs. Reachable whenever
+    # yt-dlp recorded no duration for the source.
+    if not duration or duration <= 0:
+        logger.warning("Cannot split a video with no known duration into clips")
+        return []
+
     clip_len = max_duration or 45
     min_len = min_duration or 15
     clip_len = max(min_len, min(clip_len, duration))
@@ -1016,6 +1026,14 @@ def _find_silent_gaps(
     is given, emission stops once that many windows have been produced.
     """
     if duration <= 0:
+        return []
+    # An explicit budget of zero means "no room for backfill". The cap was
+    # applied as a slice AFTER the first candidate was built, so budget=0
+    # still returned one window — a clip the caller didn't ask for. Not
+    # reachable from today's only caller (it invokes this when
+    # `len(clip_windows) < max_clips`, so the budget is at least 1), but it
+    # would be the moment a second caller appears.
+    if budget is not None and budget <= 0:
         return []
 
     covered: list[tuple[float, float]] = []
@@ -1789,28 +1807,58 @@ def _build_segments_text(segments: list[dict], duration: int, max_chars: int = 1
     if not segments:
         return ""
 
-    # For very long videos (>30 min), sample from beginning, middle, and end
+    # For very long videos (>30 min), sample from beginning, middle, and end.
     total_text_len = sum(len(f"[{s['start']:.1f}s] {s.get('text', '')}") for s in segments)
     if total_text_len > max_chars * 2 and duration > 1800:
-        # Sample strategy: first 25%, skip, middle 25%, skip, last 25%
+        # Each window gets its OWN third of the budget.
+        #
+        # This used to concatenate the three slices and then truncate the
+        # whole thing at max_chars, which could never work: the branch only
+        # runs when the transcript is more than TWICE the budget, so the three
+        # quarters (75% of the segments) cannot possibly fit in it. The output
+        # always ran out of room inside the FIRST quarter, which made the
+        # sampling identical to plain truncation — measured on a 3-hour
+        # podcast, the model was handed the first ~860s of 10800s and clip
+        # selection only ever considered the opening ~14 minutes. The
+        # second "omitted" marker was unreachable by construction, so the END
+        # of a long video was never shown at all.
+        #
+        # Budgeting per window is what makes "beginning, middle, end" true.
+        # The two markers come out of the budget so the caller's max_chars is
+        # still an upper bound on what it gets back.
+        _OMITTED = "... (segments omitted) ..."
+        per_window = max((max_chars - 2 * (len(_OMITTED) + 1)) // 3, 1)
         quarter = max(len(segments) // 4, 1)
-        mid_start = len(segments) // 2 - quarter // 2
-        sampled = (
-            segments[:quarter]
-            + [{"start": segments[quarter]["start"], "end": segments[quarter]["end"], "text": "... (segments omitted) ..."}]
-            + segments[mid_start:mid_start + quarter]
-            + [{"start": segments[-quarter]["start"], "end": segments[-quarter]["end"], "text": "... (segments omitted) ..."}]
-            + segments[-quarter:]
-        )
-        lines = []
-        char_count = 0
-        for s in sampled:
-            line = f"[{s['start']:.1f}s - {s['end']:.1f}s] {s.get('text', '')}"
-            if char_count + len(line) > max_chars:
-                lines.append(f"... (truncated at {s['start']:.0f}s of {duration}s total)")
-                break
-            lines.append(line)
-            char_count += len(line)
+        mid_start = max(0, len(segments) // 2 - quarter // 2)
+        windows = [
+            segments[:quarter],
+            segments[mid_start:mid_start + quarter],
+            segments[-quarter:],
+        ]
+
+        lines: list[str] = []
+        for i, window in enumerate(windows):
+            # The CLOSING window fills backwards, so what the model sees is
+            # the video's actual ending — the payoff, the CTA, the last beat.
+            # Filling it forwards would show the start of the final quarter
+            # and stop, which is just a fourth truncation point.
+            from_end = (i == len(windows) - 1)
+            ordered = reversed(window) if from_end else window
+            rendered: list[str] = []
+            used = 0
+            for s in ordered:
+                line = f"[{s['start']:.1f}s - {s['end']:.1f}s] {s.get('text', '')}"
+                # +1 for the newline "\n".join adds — without it the joined
+                # result overshoots the caller's max_chars.
+                if used + len(line) + 1 > per_window:
+                    break
+                rendered.insert(0, line) if from_end else rendered.append(line)
+                used += len(line) + 1
+            if not rendered:
+                continue
+            if lines:
+                lines.append(_OMITTED)
+            lines.extend(rendered)
         return "\n".join(lines)
 
     # Normal case: include all segments up to limit

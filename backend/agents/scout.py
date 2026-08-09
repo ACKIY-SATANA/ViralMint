@@ -55,9 +55,23 @@ def compute_virality_score(video: dict) -> float:
              raw views 15%, raw likes 10%.
     Also computes views_per_hour and outlier_score as side data on the dict.
     """
-    likes = max(video.get("likes", 0), 0)
-    views = max(video.get("views", 1), 1)
-    comments = max(video.get("comments", 0), 0)
+    # Coerce before comparing. Platform payloads are not consistently typed —
+    # the AI raw-search fallbacks (`_ai_raw_search_fallback` here,
+    # `_ai_parse_fallback` in tikhub_client) pass model-produced values
+    # straight into these fields, and a model emitting "1000" instead of 1000
+    # is entirely ordinary. `max(str, int)` raises TypeError, which used to
+    # escape the scoring loop below and kill the whole scout — the one thing
+    # this agent is supposed to never do.
+    def _num(key: str, default: float) -> float:
+        try:
+            v = float(video.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return v if v == v and v not in (float("inf"), float("-inf")) else default
+
+    likes = max(_num("likes", 0), 0)
+    views = max(_num("views", 1), 1)
+    comments = max(_num("comments", 0), 0)
 
     upload_date = video.get("upload_date")
     if upload_date and isinstance(upload_date, datetime):
@@ -86,10 +100,12 @@ def compute_virality_score(video: dict) -> float:
     # Store VPH on the dict for DB storage
     video["views_per_hour"] = round(vph, 1)
 
-    # Outlier score — how many x above channel average
-    channel_avg = video.get("channel_avg_views")
+    # Outlier score — how many x above channel average. Coerced for the same
+    # reason as the metrics above: these two come from the same untrusted
+    # payloads, and `"1000" < 1` raises exactly the same TypeError.
+    channel_avg = _num("channel_avg_views", 0) or None
     if not channel_avg or channel_avg < 1:
-        subs = video.get("subscriber_count", 0) or 0
+        subs = _num("subscriber_count", 0)
         channel_avg = max(subs * 0.03, 100) if subs > 0 else None
     if channel_avg and channel_avg > 0:
         video["outlier_score"] = round(views / channel_avg, 1)
@@ -234,9 +250,20 @@ class ScoutAgent:
         except Exception as enrich_err:  # noqa: BLE001
             logger.warning(f"Outlier enrichment skipped (non-fatal): {enrich_err}")
 
-        # Score all results (now with real channel_avg_views populated)
+        # Score all results (now with real channel_avg_views populated).
+        # Guarded per-row for the same reason the enrichment above is: rule
+        # #10 — one bad row must never take down a scout that already
+        # collected everything else. An unscored row still sorts (last) and
+        # still saves; a raise here would lose the whole run.
         for r in all_results:
-            r["virality_score"] = compute_virality_score(r)
+            try:
+                r["virality_score"] = compute_virality_score(r)
+            except Exception as score_err:  # noqa: BLE001
+                logger.warning(
+                    "Virality scoring failed for %s (non-fatal): %s",
+                    r.get("video_id", "?"), score_err,
+                )
+                r["virality_score"] = 0.0
 
         # Sort by virality
         all_results.sort(key=lambda r: r["virality_score"], reverse=True)

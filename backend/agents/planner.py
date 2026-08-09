@@ -724,7 +724,16 @@ class PlannerAgent:
             await self._show_videos(user_id)
 
         elif action_type == "content_calendar":
-            days = action.get("days", 7)
+            # Coerce: the model supplies this and it's used as an integer
+            # downstream, so a `"seven"` raised TypeError straight out of the
+            # dispatcher and took the whole chat turn with it. Every other
+            # action here either ignores a wrongly-typed payload or degrades;
+            # this was the only unguarded coercion.
+            try:
+                days = int(action.get("days", 7))
+            except (TypeError, ValueError):
+                days = 7
+            days = max(1, min(days, 90))
             calendar = await self.intelligence.generate_content_calendar(user_id, days)
             if calendar:
                 await ws_manager.send({

@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, delete, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -196,7 +196,11 @@ async def delete_template(
     )
     template = result.scalar_one_or_none()
     if not template:
-        return {"error": "Template not found"}
+        # 404, not a 200 with an error body. Every other delete in the API
+        # 404s on a missing row, and the frontend checks `response.ok` — so
+        # returning 200 here made a failed delete read as a success and the
+        # row silently stayed in the list.
+        raise HTTPException(status_code=404, detail="Template not found")
     await db.delete(template)
     await db.commit()
     return {"ok": True}

@@ -18,17 +18,11 @@ So the rules pinned here are:
 
 `dispatch` is stubbed, so no runner executes.
 
-Two gaps this suite FOUND and deliberately does not paper over (this file
-never patches source — see the note in test_api_endpoints_seeded.py):
-
-  * `POST /downloaded/batch-download` documents `urls` as a list of objects
-    and calls `u.get("url")` on each. A caller passing the obvious
-    `["https://…"]` gets an AttributeError → 500, not a 400.
-  * `POST /downloaded/import` streams and size-caps the upload but never
-    rejects a ZERO-byte one, so an empty file becomes a Library row.
-
-Both are pinned below as `xfail(strict=True)` so the day they're fixed the
-suite says so instead of quietly passing.
+Two gaps this suite found were fixed rather than papered over: batch-download
+now accepts a bare list of URL strings (the obvious shape, which used to hit
+`.get()` on a str and 500), and import rejects a zero-byte upload instead of
+turning it into a Library row that fails later in whatever tool it's pointed
+at.
 """
 from __future__ import annotations
 
@@ -304,10 +298,10 @@ class TestImport:
             "file": ("doc.pdf", io.BytesIO(b"x" * 100), "application/pdf")})
         assert r.status_code == 400
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "GAP: import size-caps the upload but never rejects a zero-byte one, "
-        "so an empty file becomes a Library row"))
     def test_an_empty_file_is_refused(self, client):
+        """It used to become a Library row pointing at zero bytes, which then
+        failed in whatever tool the user aimed at it with no hint that the
+        import was the problem."""
         r = client.post("/api/downloaded/import", files={
             "file": ("mine.mp4", io.BytesIO(b""), "video/mp4")})
         assert r.status_code == 400
@@ -332,12 +326,27 @@ class TestOtherPosts:
         assert r.status_code == 400
         assert "Maximum 20" in r.json()["detail"]
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "GAP: a plain list of URL strings hits u.get() on a str → 500 "
-        "instead of a 400 naming the expected shape"))
-    def test_batch_download_rejects_a_bare_string_list_cleanly(self, client):
+    def test_batch_download_accepts_a_bare_string_list(self, client):
+        """The obvious shape. It used to hit `.get()` on a str and 500."""
         r = client.post("/api/downloaded/batch-download",
-                        json={"urls": ["https://youtu.be/abc"]})
+                        json={"urls": ["https://youtu.be/abc",
+                                       "https://youtu.be/def"]})
+        assert r.status_code == 200, r.text
+        assert r.json()["count"] == 2
+
+    def test_batch_download_accepts_a_mixed_list(self, client):
+        r = client.post("/api/downloaded/batch-download", json={"urls": [
+            "https://youtu.be/abc", {"url": "https://youtu.be/def", "title": "T"}]})
+        assert r.status_code == 200, r.text
+
+    def test_batch_download_rejects_an_entry_that_is_neither(self, client):
+        r = client.post("/api/downloaded/batch-download", json={"urls": [12345]})
+        assert r.status_code == 400
+        assert "url" in r.json()["detail"].lower()
+
+    def test_batch_download_rejects_a_list_of_blanks(self, client):
+        r = client.post("/api/downloaded/batch-download",
+                        json={"urls": ["", "   "]})
         assert r.status_code == 400
 
     def test_generate_script_needs_a_real_video(self, client):
