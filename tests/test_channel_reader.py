@@ -512,3 +512,123 @@ class TestGetYoutubeChannel:
         n = len(calls.kwargs)
         asyncio.run(CR.get_youtube_channel("UCpaged", "KEY", page_token="p2"))
         assert len(calls.kwargs) > n, "page 2 is not page 1"
+
+
+# ── TikTok, where there is no API at all ────────────────────────────────────
+
+class _TTResp:
+    def __init__(self, text="", status=200):
+        self.text = text
+        self.status_code = status
+
+
+def _tiktok_page(nickname="Someone", followers=12345, unique_id="someone"):
+    payload = {"__DEFAULT_SCOPE__": {"webapp.user-detail": {"userInfo": {
+        "user": {"nickname": nickname, "uniqueId": unique_id,
+                 "avatarLarger": "https://cdn/avatar.jpg"},
+        "stats": {"followerCount": followers, "videoCount": 42},
+    }}}}
+    import json as _json
+    return ('<html><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="x">'
+            + _json.dumps(payload) + "</script></html>")
+
+
+class TestScrapeTiktokProfile:
+    """TikTok exposes no public API for follower counts, so this parses the
+    rehydration blob out of the profile HTML. It is the most fragile thing in
+    the module — every branch has to degrade to None rather than raise."""
+
+    def _scrape(self, monkeypatch, resp):
+        import types as _t
+        httpx_stub = _t.ModuleType("httpx")
+        httpx_stub.get = lambda *a, **k: resp
+        monkeypatch.setitem(sys.modules, "httpx", httpx_stub)
+        return asyncio.run(CR._scrape_tiktok_profile("https://tiktok.com/@x"))
+
+    def test_it_reads_the_rehydration_blob(self, monkeypatch):
+        out = self._scrape(monkeypatch, _TTResp(_tiktok_page()))
+        assert out["display_name"] == "Someone"
+        assert out["follower_count"] == 12345
+        assert out["avatar_url"].endswith("avatar.jpg")
+
+    def test_it_falls_back_to_the_handle_when_there_is_no_nickname(
+            self, monkeypatch):
+        out = self._scrape(monkeypatch,
+                           _TTResp(_tiktok_page(nickname="", unique_id="handle")))
+        assert out["display_name"] == "handle"
+
+    def test_a_page_without_the_blob_is_none(self, monkeypatch):
+        """TikTok changes this markup without notice — that must degrade, not
+        raise."""
+        assert self._scrape(monkeypatch, _TTResp("<html>nothing here</html>")) is None
+
+    def test_a_blob_that_is_not_json_is_none(self, monkeypatch):
+        page = ('<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">not json</script>')
+        assert self._scrape(monkeypatch, _TTResp(page)) is None
+
+    def test_a_blob_with_no_user_is_none(self, monkeypatch):
+        import json as _json
+        page = ('<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">'
+                + _json.dumps({"__DEFAULT_SCOPE__": {}}) + "</script>")
+        assert self._scrape(monkeypatch, _TTResp(page)) is None
+
+    def test_a_network_failure_is_none(self, monkeypatch):
+        import types as _t
+        httpx_stub = _t.ModuleType("httpx")
+
+        def boom(*a, **k):
+            raise RuntimeError("connection reset")
+        httpx_stub.get = boom
+        monkeypatch.setitem(sys.modules, "httpx", httpx_stub)
+        assert asyncio.run(CR._scrape_tiktok_profile("https://tiktok.com/@x")) is None
+
+
+class TestTiktokChannelInfo:
+    def test_the_scrape_is_preferred_because_it_has_follower_counts(
+            self, monkeypatch):
+        async def scraped(url):
+            return {"display_name": "Scraped", "follower_count": 999,
+                    "avatar_url": "", "video_count": 1}
+        monkeypatch.setattr(CR, "_scrape_tiktok_profile", scraped)
+
+        async def boom(*a, **k):
+            raise AssertionError("yt-dlp is the fallback, not the first choice")
+        monkeypatch.setattr(CR, "get_tiktok_channel", boom)
+        out = asyncio.run(CR.get_tiktok_channel_info("https://tiktok.com/@x"))
+        assert out["display_name"] == "Scraped"
+
+    def test_it_falls_back_to_ytdlp_when_the_scrape_fails(self, monkeypatch):
+        async def nothing(url):
+            return None
+        monkeypatch.setattr(CR, "_scrape_tiktok_profile", nothing)
+
+        async def fake_channel(url, max_videos=1):
+            return {"user": {"display_name": "From yt-dlp", "avatar_url": "",
+                             "follower_count": 0, "video_count": 3},
+                    "videos": []}
+        monkeypatch.setattr(CR, "get_tiktok_channel", fake_channel)
+        out = asyncio.run(CR.get_tiktok_channel_info("https://tiktok.com/@x"))
+        assert out["display_name"] == "From yt-dlp"
+        assert out["follower_count"] == 0, "yt-dlp can't give us this"
+
+    def test_a_ytdlp_result_with_no_user_is_none(self, monkeypatch):
+        async def nothing(url):
+            return None
+        monkeypatch.setattr(CR, "_scrape_tiktok_profile", nothing)
+
+        async def empty(url, max_videos=1):
+            return {"videos": []}
+        monkeypatch.setattr(CR, "get_tiktok_channel", empty)
+        assert asyncio.run(
+            CR.get_tiktok_channel_info("https://tiktok.com/@x")) is None
+
+    def test_both_paths_failing_is_none_not_a_crash(self, monkeypatch):
+        async def nothing(url):
+            return None
+        monkeypatch.setattr(CR, "_scrape_tiktok_profile", nothing)
+
+        async def boom(*a, **k):
+            raise RuntimeError("yt-dlp died")
+        monkeypatch.setattr(CR, "get_tiktok_channel", boom)
+        assert asyncio.run(
+            CR.get_tiktok_channel_info("https://tiktok.com/@x")) is None

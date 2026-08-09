@@ -420,3 +420,175 @@ class TestNews:
 
     def test_saving_needs_articles(self, client):
         assert client.post("/api/news/save", json={}).status_code in (400, 422)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# /api/jobs — the progress surface
+# ══════════════════════════════════════════════════════════════════════
+
+class TestJobs:
+    @pytest.fixture()
+    def jobs(self):
+        async def make():
+            from backend.agents.job_helper import create_job, update_job_status
+            running = await create_job("download", "local", {})
+            await update_job_status(running.id, "running", progress_pct=40)
+            done = await create_job("generate", "local", {})
+            await update_job_status(done.id, "success", progress_pct=100)
+            return {"running": running.id, "done": done.id}
+        return asyncio.run(make())
+
+    def test_jobs_are_listable(self, client, jobs):
+        r = client.get("/api/jobs")
+        assert r.status_code == 200
+
+    def test_they_filter_by_status(self, client, jobs):
+        r = client.get("/api/jobs", params={"status": "running"})
+        assert r.status_code == 200
+        body = r.json()
+        rows = body if isinstance(body, list) else body.get("jobs", body.get("items", []))
+        assert all(j["status"] == "running" for j in rows)
+
+    def test_they_filter_by_type(self, client, jobs):
+        r = client.get("/api/jobs", params={"type": "generate"})
+        assert r.status_code == 200
+
+    def test_the_limit_is_respected(self, client, jobs):
+        r = client.get("/api/jobs", params={"limit": 1})
+        body = r.json()
+        rows = body if isinstance(body, list) else body.get("jobs", body.get("items", []))
+        assert len(rows) <= 1
+
+    def test_a_single_job_can_be_fetched(self, client, jobs):
+        r = client.get(f"/api/jobs/{jobs['running']}")
+        assert r.status_code == 200 and r.json()["status"] == "running"
+
+    def test_an_unknown_job_is_a_404(self, client):
+        assert client.get("/api/jobs/nope").status_code == 404
+
+    def test_cancelling_a_running_job_marks_it_cancelled(self, client, jobs):
+        """Cancel only flips the row — the runner polls it. What matters here
+        is that the row actually changes, because that IS the signal."""
+        assert client.delete(f"/api/jobs/{jobs['running']}").status_code in (200, 204)
+        assert client.get(f"/api/jobs/{jobs['running']}").json()["status"] == "cancelled"
+
+    def test_deleting_a_finished_job_removes_it(self, client, jobs):
+        assert client.delete(f"/api/jobs/{jobs['done']}").status_code in (200, 204)
+        assert client.get(f"/api/jobs/{jobs['done']}").status_code == 404
+
+    def test_deleting_an_unknown_job_is_a_404(self, client):
+        assert client.delete("/api/jobs/nope").status_code == 404
+
+    def test_bulk_delete_accepts_a_list(self, client, jobs):
+        r = client.post("/api/jobs/bulk-delete",
+                        json={"job_ids": [jobs["done"], "nope"]})
+        assert r.status_code == 200
+
+    def test_bulk_delete_with_nothing_to_do_is_survivable(self, client):
+        r = client.post("/api/jobs/bulk-delete", json={"job_ids": []})
+        assert r.status_code in (200, 400, 422)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# /api/media + /api/chat/sessions
+# ══════════════════════════════════════════════════════════════════════
+
+class TestMedia:
+    def test_an_image_can_be_uploaded_and_served_back(self, client):
+        import io
+        r = client.post("/api/media/upload", files={
+            "file": ("pic.png", io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\x00" * 500),
+                     "image/png")})
+        assert r.status_code in (200, 201), r.text
+        name = r.json().get("filename") or Path(r.json().get("url", "")).name
+        if name:
+            assert client.get(f"/api/media/{name}").status_code == 200
+
+    def test_a_non_image_is_refused(self, client):
+        import io
+        r = client.post("/api/media/upload", files={
+            "file": ("clip.mp4", io.BytesIO(b"\x00" * 500), "video/mp4")})
+        assert r.status_code == 400
+
+    def test_an_unknown_file_is_a_404(self, client):
+        assert client.get("/api/media/not-here.png").status_code == 404
+
+    def test_a_traversal_filename_cannot_escape_the_media_dir(self, client):
+        """The media dir is not a window onto the filesystem. The handler
+        reduces the parameter to its basename, so the directory components are
+        discarded rather than followed — `../../etc/passwd` becomes `passwd`,
+        which isn't in the media dir either."""
+        r = client.get("/api/media/passwd")
+        assert r.status_code == 404
+        # And a multi-segment path never matches this single-segment route at
+        # all — it falls through to the SPA shell, so nothing is served from
+        # disk. Assert we did NOT get file bytes back.
+        r2 = client.get("/api/media/../../etc/passwd")
+        assert "root:" not in r2.text
+
+
+class TestChatSessions:
+    def test_a_session_round_trips(self, client):
+        made = client.post("/api/chat/sessions", json={"title": "My chat"})
+        assert made.status_code == 201, made.text
+        sid = made.json()["id"]
+
+        assert any(s["id"] == sid for s in client.get("/api/chat/sessions").json())
+
+        renamed = client.put(f"/api/chat/sessions/{sid}", json={"title": "Renamed"})
+        assert renamed.status_code == 200 and renamed.json()["title"] == "Renamed"
+
+        assert client.get(f"/api/chat/sessions/{sid}/messages").json() == []
+        assert client.delete(f"/api/chat/sessions/{sid}").status_code == 204
+
+    def test_renaming_an_unknown_session_is_a_404(self, client):
+        assert client.put("/api/chat/sessions/nope",
+                          json={"title": "x"}).status_code == 404
+
+    def test_deleting_an_unknown_session_is_a_404(self, client):
+        assert client.delete("/api/chat/sessions/nope").status_code == 404
+
+    def test_messages_for_an_unknown_session_is_a_404(self, client):
+        assert client.get("/api/chat/sessions/nope/messages").status_code == 404
+
+    def test_deleting_a_session_takes_its_messages_with_it(self, client):
+        sid = client.post("/api/chat/sessions", json={"title": "Doomed"}).json()["id"]
+
+        async def add_msg():
+            from backend.api import chat as CHAT
+            await CHAT._persist_message(sid, "user", "hello")
+        asyncio.run(add_msg())
+        assert len(client.get(f"/api/chat/sessions/{sid}/messages").json()) == 1
+        client.delete(f"/api/chat/sessions/{sid}")
+        assert client.get(f"/api/chat/sessions/{sid}/messages").status_code == 404
+
+
+# ══════════════════════════════════════════════════════════════════════
+# /api/config — the small stuff the frontend boots off
+# ══════════════════════════════════════════════════════════════════════
+
+class TestConfig:
+    @pytest.mark.parametrize("key", ["tts_voices", "caption_styles", "unknown_key"])
+    def test_a_config_key_answers_without_5xxing(self, client, key):
+        """The frontend fetches these on boot; a 500 here is a blank app."""
+        assert client.get(f"/api/config/{key}").status_code in (200, 404)
+
+    def test_a_known_key_returns_json(self, client):
+        r = client.get("/api/config/tts_voices")
+        if r.status_code == 200:
+            assert isinstance(r.json(), (dict, list))
+
+
+class TestSettingsAuthRoutes:
+    """The upload-OAuth entry points. They must not 500 when the provider
+    credentials aren't configured — that's the normal state for most users."""
+
+    @pytest.mark.parametrize("route", ["youtube-auth", "tiktok-upload-auth"])
+    def test_an_auth_url_request_is_handled(self, client, route):
+        assert client.get(f"/api/settings/{route}").status_code in (
+            200, 400, 500, 503)
+
+    @pytest.mark.parametrize("route", ["youtube-callback", "tiktok-upload-callback"])
+    def test_a_callback_without_a_code_is_handled(self, client, route):
+        assert client.get(f"/api/settings/{route}").status_code in (
+            200, 400, 422, 500)

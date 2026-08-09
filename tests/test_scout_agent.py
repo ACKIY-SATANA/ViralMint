@@ -315,3 +315,42 @@ class TestViralityScore:
 
     def test_missing_fields_are_survivable(self):
         assert compute_virality_score({"platform": "youtube"}) >= 0
+
+
+class TestVideoUrlEdgeCases:
+    def test_a_missing_author_block_is_survivable(self):
+        """Scout rows come from four different platform shapes; a missing
+        nested key must never raise mid-scout."""
+        assert ScoutAgent._build_video_url("tiktok", "1", {"author": {}}) \
+            == "https://www.tiktok.com/video/1"
+
+    def test_an_empty_video_id_still_returns_a_string(self):
+        for p in ("youtube", "tiktok", "douyin", "other"):
+            assert isinstance(ScoutAgent._build_video_url(p, "", {}), str)
+
+
+class TestViralityScoreShape:
+    def test_a_brand_new_video_outranks_an_identical_old_one(self):
+        """Recency is part of the formula — a template that worked last week
+        is worth more than the same numbers from two years ago."""
+        from datetime import datetime, timedelta
+        fresh = _result(views=10_000, likes=1_000,
+                        upload_date=datetime.utcnow())
+        old = _result(views=10_000, likes=1_000,
+                      upload_date=datetime.utcnow() - timedelta(days=900))
+        assert compute_virality_score(fresh) >= compute_virality_score(old)
+
+    @pytest.mark.xfail(strict=True, reason=(
+        "GAP: compute_virality_score does max(video.get('likes', 0), 0), which "
+        "raises TypeError on a string metric — and the scoring loop in "
+        "ScoutAgent.run is NOT wrapped, unlike the outlier enrichment "
+        "immediately above it. So one string-typed field kills the whole "
+        "scout, which is exactly what rule #10 forbids. Reachable via the AI "
+        "raw-search fallbacks: both _ai_parse_fallback (tikhub_client) and "
+        "_ai_raw_search_fallback (scout) pass model-produced values straight "
+        "into these fields, and a model emitting \"1000\" instead of 1000 is "
+        "entirely ordinary"))
+    def test_a_string_metric_does_not_crash_the_scorer(self):
+        """Platform payloads are not consistently typed."""
+        assert compute_virality_score(
+            {"platform": "tiktok", "views": "1000", "likes": "10"}) >= 0

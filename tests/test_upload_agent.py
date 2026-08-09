@@ -409,3 +409,43 @@ class TestPersistence:
             return await _video_row(vid)
         video = asyncio.run(run())
         assert json.loads(video.uploaded_platforms_json) == ["tiktok"]
+
+
+class TestPlatformIdPersistence:
+    """The stored per-platform id is what lets the Library link to the live
+    post — losing it means the user can't find what they published."""
+
+    def test_a_platform_with_no_returned_id_still_records_the_upload(
+            self, ws, providers):
+        providers["outcomes"]["youtube"] = {"url": "https://youtu.be/x"}
+
+        async def run():
+            await _make_settings(
+                youtube_credentials_json_encrypted=encrypt('{"token":"t"}'))
+            vid = await _make_video()
+            await UploadAgent().run(await _job(), vid, ["youtube"])
+            return await _video_row(vid)
+        video = asyncio.run(run())
+        assert json.loads(video.uploaded_platforms_json) == ["youtube"]
+
+    def test_an_already_uploaded_platform_list_is_extended_not_replaced(
+            self, ws, providers):
+        async def run():
+            await _make_settings(
+                tiktok_upload_token_encrypted=encrypt("TOK"),
+                tiktok_default_privacy=None)
+            vid = await _make_video(
+                uploaded_platforms_json=json.dumps(["youtube"]))
+            await UploadAgent().run(await _job(), vid, ["tiktok"])
+            return await _video_row(vid)
+        video = asyncio.run(run())
+        assert set(json.loads(video.uploaded_platforms_json)) == {"youtube", "tiktok"}
+
+    def test_the_row_is_marked_uploaded(self, ws, providers):
+        async def run():
+            await _make_settings(
+                youtube_credentials_json_encrypted=encrypt('{"token":"t"}'))
+            vid = await _make_video()
+            await UploadAgent().run(await _job(), vid, ["youtube"])
+            return await _video_row(vid)
+        assert asyncio.run(run()).status == "uploaded"

@@ -313,3 +313,37 @@ class TestDispatch:
     def test_save_news_with_nothing_to_save_is_inert(self, bus):
         self._run({"type": "save_news_to_library", "articles": []})
         assert bus["jobs"] == []
+
+
+class TestDispatchRobustness:
+    """Whatever the model emits, the turn survives it."""
+
+    def _run(self, action):
+        asyncio.run(PlannerAgent()._dispatch_action(action, None, "local"))
+
+    def test_a_null_payload_is_inert(self, bus):
+        self._run({"type": "start_download", "scout_result_ids": None})
+        assert bus["jobs"] == []
+
+    @pytest.mark.parametrize("action", [
+        {"type": "start_download", "scout_result_ids": "abc"},
+        {"type": "start_generate", "downloaded_video_id": 123},
+    ])
+    def test_a_wrongly_typed_payload_does_not_crash_the_turn(self, bus, action):
+        """A model that emits a string where a list belongs must not take the
+        whole conversation down with it."""
+        self._run(action)
+
+    @pytest.mark.xfail(strict=True, reason=(
+        "GAP: `content_calendar` passes the model's `days` straight into "
+        "generate_content_calendar, which uses it as an integer — so a model "
+        "emitting \"seven\" instead of 7 raises TypeError out of "
+        "_dispatch_action and takes the whole chat turn down. Every other "
+        "action either ignores a wrongly-typed payload or degrades; this one "
+        "is the only unguarded coercion"))
+    def test_a_non_numeric_day_count_does_not_crash_the_turn(self, bus):
+        self._run({"type": "content_calendar", "days": "seven"})
+
+    def test_a_wizard_action_with_no_id_is_inert(self, bus):
+        self._run({"type": "start_wizard"})
+        assert bus["sent"] == []

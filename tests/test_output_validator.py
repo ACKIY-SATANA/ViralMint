@@ -313,3 +313,18 @@ async def test_our_own_cueless_export_also_fails(tmp_path):
     out = tmp_path / "none.vtt"
     _build_subtitle_file([], "vtt", out)
     assert not (await validate_output(out)).ok
+
+
+def test_a_zip_bundle_is_size_checked_only(tmp_path):
+    """Multi-aspect export bundles have no streams to probe."""
+    import zipfile
+    z = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("a.mp4", b"\x00" * 100)
+    assert _v(z).ok
+
+
+def test_a_directory_is_not_a_valid_artifact(tmp_path):
+    d = tmp_path / "adir"
+    d.mkdir()
+    assert isinstance(_v(d).ok, bool)

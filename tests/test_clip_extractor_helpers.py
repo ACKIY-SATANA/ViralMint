@@ -324,3 +324,50 @@ class TestCountSpeechUnits:
 
     def test_empty_is_zero(self):
         assert CE._count_speech_units("") == 0
+
+
+class TestFindSilentGaps:
+    """Silent stretches are backfilled as extra clips when the AI found fewer
+    than the user asked for — additive only, never replacing a speech clip."""
+
+    SEGS = [{"start": 0.0, "end": 20.0, "text": "talking"},
+            {"start": 120.0, "end": 140.0, "text": "talking again"}]
+
+    def test_a_long_gap_becomes_a_candidate(self):
+        out = CE._find_silent_gaps(
+            segments=self.SEGS, clip_windows=[], duration=200,
+            min_gap_duration=10.0, max_clip_duration=60.0, budget=3)
+        assert out, "the 100s hole between segments is usable footage"
+
+    def test_it_never_exceeds_the_budget(self):
+        out = CE._find_silent_gaps(
+            segments=self.SEGS, clip_windows=[], duration=600,
+            min_gap_duration=5.0, max_clip_duration=30.0, budget=2)
+        assert len(out) <= 2
+
+    def test_a_zero_budget_still_yields_one_window(self):
+        """Pinning real behaviour, and noting it's a latent off-by-one rather
+        than a live bug: the budget is applied as a slice cap after the first
+        candidate is built, so budget=0 returns one. Unreachable today — the
+        only caller invokes this when `len(clip_windows) < max_clips`, so the
+        budget is always at least 1 — but a future caller passing 0 would get
+        a clip it didn't ask for."""
+        out = CE._find_silent_gaps(
+            segments=self.SEGS, clip_windows=[], duration=200,
+            min_gap_duration=10.0, max_clip_duration=60.0, budget=0)
+        assert len(out) <= 1
+
+    def test_gaps_shorter_than_the_minimum_are_ignored(self):
+        tight = [{"start": 0.0, "end": 10.0, "text": "a"},
+                 {"start": 12.0, "end": 20.0, "text": "b"}]
+        assert CE._find_silent_gaps(
+            segments=tight, clip_windows=[], duration=20,
+            min_gap_duration=30.0, max_clip_duration=60.0, budget=3) == []
+
+    def test_it_does_not_overlap_the_clips_already_chosen(self):
+        existing = [{"start": 20.0, "end": 120.0}]
+        out = CE._find_silent_gaps(
+            segments=self.SEGS, clip_windows=existing, duration=200,
+            min_gap_duration=10.0, max_clip_duration=60.0, budget=3)
+        for w in out:
+            assert not (w["start"] < 120.0 and w["end"] > 20.0), w

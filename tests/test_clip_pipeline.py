@@ -341,3 +341,37 @@ class TestFilterAndOffsetSegments:
 
     def test_no_segments_yields_nothing(self):
         assert CE._filter_and_offset_segments([], 0.0, 30.0) == []
+
+
+class TestGenerateClipMetadata:
+    """Per-clip titles/descriptions come from one batched AI call. It's the
+    last step, so a failure here must never cost the finished clips."""
+
+    def test_an_ai_failure_leaves_the_clips_intact(self, video, ffmpeg,
+                                                    monkeypatch):
+        async def boom(*a, **k):
+            raise RuntimeError("model down")
+        monkeypatch.setattr(CE, "_generate_clip_metadata", boom)
+        out = _process(video)
+        assert len(out) == 2, "metadata is a bonus, not a gate"
+
+    def test_it_runs_once_per_clip_with_that_clip_s_title(self, video, ffmpeg,
+                                                            monkeypatch):
+        seen = []
+
+        async def spy(title, transcript_text, user_settings):
+            seen.append(title)
+            return {}
+        monkeypatch.setattr(CE, "_generate_clip_metadata", spy)
+        _process(video)
+        assert len(seen) == 2 and set(seen) == {"One", "Two"}
+
+
+class TestHasVideoStream:
+    def test_an_unprobeable_file_FAILS_OPEN_as_a_video(self):
+        """Pinning real behaviour. When ffprobe can't answer, this returns
+        True — the audio tools branch on it to choose .mp4 vs .mp3, so failing
+        open means an unprobeable input is treated as video. Safe today
+        because every caller validates the file exists first, but it is a
+        fail-open default, not a fail-closed one."""
+        assert CE._has_video_stream(Path("/no/such/file.mp4")) is True

@@ -383,3 +383,128 @@ class TestOtherPosts:
         vid = asyncio.run(add())
         assert client.delete(f"/api/downloaded/{vid}").status_code in (200, 204)
         assert client.get(f"/api/downloaded/{vid}").status_code == 404
+
+
+# ── the AI-backed routes ────────────────────────────────────────────────────
+
+@pytest.fixture()
+def ai(monkeypatch):
+    """Stub the BYOK AI client. Nothing here calls a model."""
+    state = {"prompts": [], "reply": "AI OUTPUT", "raises": None}
+
+    class _AI:
+        async def chat(self, messages, max_tokens=None, **kw):
+            state["prompts"].append(messages[0]["content"])
+            if state["raises"]:
+                raise state["raises"]
+            return state["reply"]
+
+    monkeypatch.setattr("backend.core.ai_provider.get_ai_client",
+                        lambda *a, **k: _AI())
+    return state
+
+
+class TestPolishScript:
+    def test_it_returns_the_polished_text(self, client, ai):
+        r = client.post("/api/downloaded/polish-script",
+                        json={"script": "my rough draft"})
+        assert r.status_code == 200
+        assert r.json()["script"] == "AI OUTPUT"
+        assert "my rough draft" in ai["prompts"][0]
+
+    def test_an_empty_script_is_refused_before_any_ai_call(self, client, ai):
+        r = client.post("/api/downloaded/polish-script", json={"script": "   "})
+        assert r.status_code == 400
+        assert ai["prompts"] == [], "don't spend a call on nothing"
+
+    def test_a_missing_body_is_refused(self, client, ai):
+        assert client.post("/api/downloaded/polish-script",
+                           json={}).status_code == 400
+
+    def test_a_very_long_script_is_capped_before_the_prompt(self, client, ai):
+        """The prompt budget has to stay predictable."""
+        client.post("/api/downloaded/polish-script", json={"script": "z" * 50000})
+        assert len(ai["prompts"][0]) < 20000
+
+    def test_a_missing_api_key_is_a_400_not_a_500(self, client, ai):
+        """BYOK: no key is the user's setup problem, and the UI routes a 400
+        to a "add your key in Settings" prompt."""
+        from backend.core.exceptions import AIKeyMissingError
+        ai["raises"] = AIKeyMissingError("No AI API key configured")
+        r = client.post("/api/downloaded/polish-script", json={"script": "x"})
+        assert r.status_code == 400
+
+    def test_an_ai_outage_is_a_500(self, client, ai):
+        ai["raises"] = RuntimeError("model down")
+        assert client.post("/api/downloaded/polish-script",
+                           json={"script": "x"}).status_code == 500
+
+
+class TestScriptFromTopic:
+    def test_it_writes_a_script_from_a_topic_alone(self, client, ai):
+        r = client.post("/api/downloaded/generate-script-from-topic",
+                        json={"topic": "how sourdough works"})
+        assert r.status_code == 200
+        assert "sourdough" in ai["prompts"][0]
+
+    def test_an_empty_topic_is_refused(self, client, ai):
+        assert client.post("/api/downloaded/generate-script-from-topic",
+                           json={"topic": ""}).status_code == 400
+
+
+class TestAiAction:
+    @pytest.fixture()
+    def analyzed(self, media):
+        """ai-action works off insights, so the row needs them."""
+        import json as _json
+
+        async def add():
+            from backend.database import AsyncSessionLocal
+            from backend.models.downloaded_video import DownloadedVideo
+            async with AsyncSessionLocal() as db:
+                v = DownloadedVideo(
+                    user_id="local", title="Analyzed", platform="youtube",
+                    video_path=str(media), duration_seconds=120,
+                    insights_json=_json.dumps({
+                        "hook": "You won't believe this",
+                        "suggested_angle": "Explain it simply",
+                        "structure": "hook, body, cta"}))
+                db.add(v)
+                await db.commit()
+                return v.id
+        return asyncio.run(add())
+
+    @pytest.mark.parametrize("action", [
+        "strengthen_hook", "rewrite_shorter", "suggest_titles", "improve_angle"])
+    def test_each_action_runs(self, client, ai, analyzed, action):
+        r = client.post(f"/api/downloaded/{analyzed}/ai-action",
+                        json={"action": action})
+        assert r.status_code == 200, r.text
+
+    def test_translate_carries_the_target_language(self, client, ai, analyzed):
+        client.post(f"/api/downloaded/{analyzed}/ai-action",
+                    json={"action": "translate", "language": "Japanese"})
+        assert "Japanese" in ai["prompts"][0]
+
+    def test_rewrite_for_platform_carries_the_platform(self, client, ai, analyzed):
+        client.post(f"/api/downloaded/{analyzed}/ai-action",
+                    json={"action": "rewrite_for_platform", "platform": "tiktok"})
+        assert "tiktok" in ai["prompts"][0].lower()
+
+    def test_an_invalid_action_lists_the_valid_ones(self, client, ai, analyzed):
+        r = client.post(f"/api/downloaded/{analyzed}/ai-action",
+                        json={"action": "teleport"})
+        assert r.status_code == 400
+        assert "strengthen_hook" in r.json()["detail"]
+
+    def test_an_unanalyzed_video_says_to_analyze_first(self, client, ai, seeded):
+        """The action operates on insights — without them there's nothing to
+        rewrite, and "run analysis first" is the actionable message."""
+        r = client.post(f"/api/downloaded/{seeded['ok']}/ai-action",
+                        json={"action": "strengthen_hook"})
+        assert r.status_code == 400
+        assert "analysis" in r.json()["detail"].lower()
+
+    def test_an_unknown_video_is_a_404(self, client, ai):
+        assert client.post("/api/downloaded/nope/ai-action",
+                           json={"action": "strengthen_hook"}).status_code == 404
