@@ -851,6 +851,24 @@ async def run_extract_clips(
         if not clips:
             raise ValueError("No clips were extracted")
 
+        # Final cancellation gate — the pipeline polls at its phase
+        # boundaries, but a cancel that lands DURING the ffmpeg fan-out is
+        # only visible here, after the files exist. Caught before the save
+        # loop so a cancelled job leaves no Library rows and the produced
+        # files don't orphan in GENERATED_DIR.
+        from backend.agents.job_helper import job_cancelled
+        from backend.core.exceptions import JobCancelledError
+        if await job_cancelled(job_id):
+            for clip in clips:
+                for key in ("video_path", "thumbnail_path"):
+                    p = clip.get(key)
+                    if p:
+                        try:
+                            Path(p).unlink(missing_ok=True)
+                        except OSError:
+                            pass
+            raise JobCancelledError("Job was cancelled by the user")
+
         # Source video title — used as the prefix for per-clip names so users
         # (and LLMs) can tell at a glance which source a clip came from.
         # Truncated to ~30 chars to keep the per-clip title short.
@@ -950,6 +968,18 @@ async def run_extract_clips(
         logger.info("TASK DONE  extract_clips | job=%s clips=%d", job_id[:8], len(clips))
 
     except Exception as e:
+        # User-initiated cancel is a quiet stop, not a failure: the row is
+        # already "cancelled" (and must stay that way — a "failed" write here
+        # would overwrite it, terminal→terminal is allowed), and the user gets
+        # no job_failed toast for something they did on purpose. The import is
+        # local because the happy path above already imported it; re-importing
+        # is free.
+        from backend.core.exceptions import JobCancelledError
+        if isinstance(e, JobCancelledError):
+            logger.info("TASK CANCELLED extract_clips | job=%s (user cancel honoured)", job_id[:8])
+            from backend.agents.job_helper import update_job_status as _update
+            await _update(job_id, "cancelled", current_step="Cancelled")
+            return
         logger.error(f"TASK FAIL  extract_clips | job={job_id[:8]}: {e}", exc_info=True)
         from backend.agents.job_helper import update_job_status as _update
         await _update(job_id, "failed", error_message=str(e))

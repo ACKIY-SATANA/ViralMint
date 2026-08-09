@@ -51,6 +51,101 @@ async def _ffmpeg_limited(coro):
     async with _ffmpeg_semaphore:
         return await coro
 
+
+async def _raise_if_cancelled(job_id: str | None) -> None:
+    """Stop the pipeline when the user has cancelled the job.
+
+    Cancellation only flips the Job row (backend/api/jobs.py) — nothing
+    interrupts this coroutine, so before this poll existed a cancelled
+    extraction ran to completion and its final "success" write overwrote
+    "cancelled" (terminal→terminal updates are deliberately allowed so the
+    boot zombie-sweep can self-heal). Polled at phase boundaries; the runner
+    turns the raise into a quiet stop with no job_failed event.
+    """
+    from backend.agents.job_helper import job_cancelled
+    if await job_cancelled(job_id):
+        from backend.core.exceptions import JobCancelledError
+        raise JobCancelledError("Job was cancelled by the user")
+
+
+def purge_orphan_clip_files(max_age_hours: float = 24.0) -> int:
+    """Delete `clip_*` files in GENERATED_DIR that no Library row references.
+
+    Per-clip failures clean up after themselves (_process_clips_parallel
+    unlinks the cut file when a later stage fails), but a process death or a
+    hard mid-pipeline failure between the ffmpeg fan-out and the DB save
+    leaks the already-cut mp4s forever — clip files are written straight into
+    GENERATED_DIR under their final names, so there is no scratch dir for a
+    sweeper to reap.
+
+    Safety rails, in order:
+      - Only files matching `clip_*.mp4` (the pipeline's naming; includes the
+        `_rf` / `_captioned` / watermark variants which keep the prefix).
+        Real generated videos use different prefixes.
+      - Only files older than `max_age_hours` (default 24h — an in-flight
+        job's files are minutes-to-hours old, and the boot sweep has long
+        since failed any job that died with a previous process).
+      - The DB read of referenced paths must SUCCEED — on any DB error the
+        purge aborts rather than treating "couldn't check" as "unreferenced".
+
+    Sync on purpose (filesystem walk) — callers run it via asyncio.to_thread.
+    Returns the number of files deleted.
+    """
+    import time
+    from sqlalchemy import create_engine, select
+
+    gen_dir = settings.GENERATED_DIR
+    if not gen_dir.exists():
+        return 0
+
+    candidates = [
+        p for p in gen_dir.glob("clip_*.mp4")
+        if p.is_file() and (time.time() - p.stat().st_mtime) > max_age_hours * 3600
+    ]
+    if not candidates:
+        return 0
+
+    # Referenced paths, resolved. Sync engine: this runs inside to_thread,
+    # where the async session (and its event loop) isn't available. Same DB
+    # file as the app — just the sync sqlite driver instead of aiosqlite.
+    from backend.models.generated_video import GeneratedVideo
+    engine = create_engine(settings.DATABASE_URL.replace("sqlite+aiosqlite", "sqlite"))
+    try:
+        with engine.connect() as conn:
+            # EVERY file-path column, not just video_path. A cached 16:9
+            # export is written next to its source by convert_aspect_ratio's
+            # default naming (`{stem}_16x9_{method}.mp4`), so a clip's export
+            # is ITSELF a `clip_*.mp4` in GENERATED_DIR — referenced only by
+            # video_path_landscape. Reading one column deleted the user's
+            # cached export after 24h and left the row pointing at a missing
+            # file.
+            rows = conn.execute(select(
+                GeneratedVideo.video_path,
+                GeneratedVideo.video_path_landscape,
+                GeneratedVideo.thumbnail_path,
+                GeneratedVideo.audio_path,
+            )).all()
+        referenced = {
+            str(Path(value).resolve())
+            for row in rows for value in row if value
+        }
+    finally:
+        engine.dispose()
+
+    deleted = 0
+    for p in candidates:
+        if str(p.resolve()) in referenced:
+            continue
+        try:
+            p.unlink()
+            deleted += 1
+        except OSError as e:
+            logger.warning("Orphan clip purge could not delete %s: %s", p, e)
+    if deleted:
+        logger.info("Orphan clip purge removed %d unreferenced clip file(s)", deleted)
+    return deleted
+
+
 # ── AI Prompts ────────────────────────────────────────────────────────────────
 
 CLIP_SELECTION_PROMPT = """You are an expert viral short-form video editor who has produced thousands of clips with millions of views.
@@ -566,12 +661,38 @@ async def extract_viral_clips(
     # Step 1: Load or transcribe segments (10%). Manual mode still loads the
     # transcript — captions rely on word-level timestamps from the segment
     # subset that overlaps each user-picked window.
-    if job_id:
-        await ws_manager.send_progress(job_id, 5, "Loading transcript...", user_id)
-    segments = await _load_or_transcribe_segments(
-        video, user_settings, whisper_quality=whisper_quality,
-        force_retranscribe=force_retranscribe, job_id=job_id, user_id=user_id,
-    )
+    #
+    # …unless there are no captions to time. Manual mode is the ONE path with
+    # no AI judgement — the windows come straight from the user, and
+    # `_build_manual_clip_windows` never reads a segment. So with captions off
+    # the transcript is bought and thrown away, and on a first cut (nothing
+    # cached yet) that is Whisper chewing through the WHOLE source to produce
+    # a 7-second trim: measured at ~4 minutes, which reads as a hung app. The
+    # second cut on the same video is fast (cached transcript), which is why
+    # the cost looks intermittent — it lands on the FIRST cut of every newly
+    # imported video. AI modes still transcribe: that's what they select on,
+    # and an unspecified style (None = "caller didn't say") is not "off".
+    from backend.services.caption_service import captions_disabled
+    if mode == "manual" and captions_disabled(caption_style):
+        logger.info(
+            "Manual clip extraction with captions off — skipping transcription "
+            "on %s (nothing would consume the segments)", video.id[:8])
+        segments = []
+    else:
+        if job_id:
+            await ws_manager.send_progress(job_id, 5, "Loading transcript...", user_id)
+        segments = await _load_or_transcribe_segments(
+            video, user_settings, whisper_quality=whisper_quality,
+            force_retranscribe=force_retranscribe, job_id=job_id, user_id=user_id,
+        )
+
+    # Cancellation poll — the user's cancel only flips the Job row; the
+    # coroutine has to notice. Checked at the three phase boundaries that
+    # bracket the expensive work (Whisper above, AI selection next, the ffmpeg
+    # fan-out after that) so a cancelled job stops within one phase instead of
+    # running minutes to a completion nobody wants — which also overwrote
+    # "cancelled" with "success" before this existed.
+    await _raise_if_cancelled(job_id)
 
     duration = video.duration_seconds or 0
 
@@ -777,6 +898,11 @@ async def extract_viral_clips(
                 )
 
     logger.info(f"AI selected {len(clip_windows)} clip windows from {video.id[:8]}")
+
+    # Second cancellation poll — AI selection (or the manual/short-video
+    # branch) is done; this is the last cheap moment before the ffmpeg fan-out
+    # cuts N files.
+    await _raise_if_cancelled(job_id)
 
     # Step 3: Process all clips in PARALLEL (30-95%)
     if job_id:

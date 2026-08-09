@@ -148,3 +148,31 @@ async def update_job_status(
             asyncio.create_task(_record_job_behavior(
                 job.job_type, job.user_id, job.input_json, job.output_json,
             ))
+
+
+async def job_cancelled(job_id: str | None) -> bool:
+    """True when the job row has been flipped to "cancelled" by the user.
+
+    Cancellation (DELETE /api/jobs/{id} or the WS job_cancel message) only
+    updates the DB row — it never interrupts the running coroutine. Long
+    pipelines poll this at phase boundaries (after Whisper, after AI
+    selection, before the ffmpeg fan-out) and raise JobCancelledError so a
+    cancelled job stops burning CPU and its "cancelled" status isn't
+    overwritten by a late terminal write.
+
+    `None` / unknown ids return False — a pipeline invoked without a job
+    (direct service call, tests) must never think it was cancelled. DB errors
+    also return False: cancellation is best-effort, and a transient read
+    failure must not kill a healthy job.
+    """
+    if not job_id:
+        return False
+    try:
+        async with AsyncSessionLocal() as db:
+            from sqlalchemy import select
+            row = (await db.execute(
+                select(Job.status).where(Job.id == job_id)
+            )).scalar_one_or_none()
+        return row == "cancelled"
+    except Exception:
+        return False

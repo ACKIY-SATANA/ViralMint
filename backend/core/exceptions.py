@@ -52,6 +52,20 @@ class VideoUnavailableError(DownloadError):
     pass
 
 
+# ── Job lifecycle ─────────────────────────────────────────────────────────────
+class JobCancelledError(ViralMintError):
+    """The user cancelled the job while it was running.
+
+    Cancellation flips the Job row to "cancelled" (backend/api/jobs.py) but
+    does NOT interrupt the coroutine — long pipelines must poll
+    `job_helper.job_cancelled()` at phase boundaries and raise this to stop.
+    Runners catch it separately from real failures: no `job_failed` WS event
+    for something the user did on purpose, and the row keeps its "cancelled"
+    status instead of being overwritten by a late "success"/"failed" write.
+    """
+    pass
+
+
 # ── Generation errors ─────────────────────────────────────────────────────────
 class GenerationError(ViralMintError):
     pass

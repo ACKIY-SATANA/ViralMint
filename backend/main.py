@@ -90,6 +90,30 @@ async def lifespan(app: FastAPI):
         import logging
         logging.getLogger(__name__).warning(f"Handoff job watcher failed to start: {e}")
 
+    # Reclaim clip files orphaned by a process death. Clips are cut straight
+    # into GENERATED_DIR under their final names (no scratch dir), so a
+    # backend killed between the ffmpeg fan-out and the DB save leaves mp4s no
+    # Library row references. They only appear BECAUSE a process died, so boot
+    # is exactly the right moment to sweep — no periodic scheduler needed. The
+    # 24h age gate inside the purge keeps it away from anything in flight.
+    # Background + best-effort: startup must never wait on a filesystem walk.
+    try:
+        from backend.core.task_runner import spawn_background
+
+        async def _purge_orphan_clips():
+            import asyncio as _asyncio
+            from backend.services.clip_extractor import purge_orphan_clip_files
+            try:
+                await _asyncio.to_thread(purge_orphan_clip_files)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(f"Orphan clip purge failed: {exc}")
+
+        spawn_background(_purge_orphan_clips())
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Orphan clip purge failed to start: {e}")
+
     # Ensure SFX directory + generated files exist
     try:
         from backend.services.sfx_service import ensure_sfx_dir
