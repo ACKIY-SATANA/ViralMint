@@ -672,8 +672,13 @@ async def extract_viral_clips(
     # the cost looks intermittent — it lands on the FIRST cut of every newly
     # imported video. AI modes still transcribe: that's what they select on,
     # and an unspecified style (None = "caller didn't say") is not "off".
+    #
+    # `remove_silence` is the OTHER consumer: it re-times word timestamps to
+    # cut fillers and dead air, and with no words it returns the clip
+    # untouched — so skipping the transcript there would turn a ticked box
+    # into a silent no-op.
     from backend.services.caption_service import captions_disabled
-    if mode == "manual" and captions_disabled(caption_style):
+    if mode == "manual" and captions_disabled(caption_style) and not remove_silence:
         logger.info(
             "Manual clip extraction with captions off — skipping transcription "
             "on %s (nothing would consume the segments)", video.id[:8])

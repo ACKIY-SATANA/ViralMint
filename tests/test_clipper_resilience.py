@@ -281,7 +281,7 @@ class TestManualModeSkipsTranscription:
     """`_build_manual_clip_windows` never reads a segment, so with captions off
     the transcript is bought and thrown away."""
 
-    def _run(self, *, mode: str, caption_style, tmp_path):
+    def _run(self, *, mode: str, caption_style, tmp_path, remove_silence=False):
         """Drive extract_viral_clips far enough to observe whether the
         transcription step was reached. Returns True when it was."""
         from types import SimpleNamespace
@@ -314,6 +314,7 @@ class TestManualModeSkipsTranscription:
                 video=video, user_settings=None,
                 opts=ExtractOptions(
                     mode=mode, max_clips=1, caption_style=caption_style,
+                    remove_silence=remove_silence,
                     time_ranges=[{"start": 0, "end": 7}] if mode == "manual" else None,
                 ),
                 job_id=None, user_id="local",
@@ -333,3 +334,10 @@ class TestManualModeSkipsTranscription:
         """None means "the caller didn't say", never "off" — captions would
         render with the default style, so the timings are still needed."""
         assert self._run(mode="manual", caption_style=None, tmp_path=tmp_path) is True
+
+    def test_remove_silence_is_the_other_consumer(self, tmp_path):
+        """It re-times word timestamps to cut fillers and dead air, and with
+        no words it returns the clip untouched — skipping the transcript here
+        would turn a ticked box into a silent no-op."""
+        assert self._run(mode="manual", caption_style="none",
+                         remove_silence=True, tmp_path=tmp_path) is True

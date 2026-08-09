@@ -369,7 +369,14 @@ const WHISPER_QUALITIES = [
 // backend's _EMOJI_STYLES set (none|minimal|moderate|heavy, default moderate).
 // Every engine style plus the "none" sentinel — the picker used to list
 // three of the ten the renderer supports.
-const CAPTION_STYLE_OPTIONS = [...CAPTION_STYLES.map(s => s.value), "none"]
+// The shared list carries a display label per style; the chips used to render
+// the raw value capitalized, so the themed pack read as "Urban / Warm / Mono"
+// instead of "Bold Urban / Warm Glow / Monochrome" — the same names every
+// other surface shows.
+const CAPTION_STYLE_OPTIONS = [
+  ...CAPTION_STYLES.map(s => ({ value: s.value, label: s.label })),
+  { value: "none", label: "None" },
+]
 const EMOJI_STYLE_OPTIONS = [
   { v: "none", label: "Off" },
   { v: "minimal", label: "Minimal" },
@@ -405,12 +412,12 @@ function CaptionStylePicker({ value, onChange }) {
     <Box>
       <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.5, display: "block" }}>Caption style</Typography>
       <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-        {CAPTION_STYLE_OPTIONS.map(s => (
-          <Chip key={s} label={s} size="small"
-            variant={value === s ? "filled" : "outlined"}
-            color={value === s ? "primary" : "default"}
-            onClick={() => onChange(s)}
-            sx={{ textTransform: "capitalize", cursor: "pointer" }} />
+        {CAPTION_STYLE_OPTIONS.map(({ value: v, label }) => (
+          <Chip key={v} label={label} size="small"
+            variant={value === v ? "filled" : "outlined"}
+            color={value === v ? "primary" : "default"}
+            onClick={() => onChange(v)}
+            sx={{ cursor: "pointer" }} />
         ))}
       </Stack>
       {value === "none" && (
@@ -441,6 +448,31 @@ function EmojiStylePicker({ value, onChange, disabled }) {
       <Typography variant="caption" sx={{ color: "text.secondary", mt: 0.5, display: "block" }}>
         Emojis are inserted after matched keywords (🔥 fire, 💰 money, ❤️ love, etc.).
         {disabled ? " Disabled because captions are off." : ""}
+      </Typography>
+    </Box>
+  )
+}
+
+// Shared by both extract modes. It used to live inline in the AI tab only,
+// on the theory that a hand-picked range is a deliberate cut that must not be
+// re-timed — but the backend removes silence INSIDE each already-cut clip, so
+// the picked boundaries are untouched and the clip just gets tighter. Gating
+// it made hand-picked clips the one place pacing could NOT be fixed.
+function RemoveSilenceToggle({ value, onChange }) {
+  return (
+    <Box>
+      <FormControlLabel
+        control={
+          <Checkbox
+            checked={value}
+            onChange={e => onChange(e.target.checked)}
+            size="small"
+          />
+        }
+        label={<Typography variant="caption" sx={{ fontWeight: 600 }}>Remove silence & filler words</Typography>}
+      />
+      <Typography variant="caption" sx={{ color: "text.secondary", display: "block", ml: 4, mt: -0.5 }}>
+        Cuts out "um", "uh", long pauses — tighter pacing for short-form
       </Typography>
     </Box>
   )
@@ -700,22 +732,9 @@ function ExtractDialog({ open, onClose, video, onExtract }) {
                 disabled={opts.caption_style === "none"}
                 onChange={v => setOpts(p => ({ ...p, emoji_style: v }))} />
 
-              {/* Silence & filler removal */}
-              <Box>
-                <FormControlLabel
-                  control={
-                    <Checkbox
-                      checked={opts.remove_silence}
-                      onChange={e => setOpts(p => ({ ...p, remove_silence: e.target.checked }))}
-                      size="small"
-                    />
-                  }
-                  label={<Typography variant="caption" sx={{ fontWeight: 600 }}>Remove silence & filler words</Typography>}
-                />
-                <Typography variant="caption" sx={{ color: "text.secondary", display: "block", ml: 4, mt: -0.5 }}>
-                  Cuts out "um", "uh", long pauses — tighter pacing for short-form
-                </Typography>
-              </Box>
+              <RemoveSilenceToggle
+                value={opts.remove_silence}
+                onChange={v => setOpts(p => ({ ...p, remove_silence: v }))} />
             </Stack>
           </Collapse>
           </>
@@ -802,6 +821,10 @@ function ExtractDialog({ open, onClose, video, onExtract }) {
               value={opts.emoji_style}
               disabled={opts.caption_style === "none"}
               onChange={v => setOpts(p => ({ ...p, emoji_style: v }))} />
+
+            <RemoveSilenceToggle
+              value={opts.remove_silence}
+              onChange={v => setOpts(p => ({ ...p, remove_silence: v }))} />
           </>
           )}
         </Stack>
@@ -971,11 +994,13 @@ export default function ClipStudio() {
       }
       // emoji_style default is "moderate" — only send when overridden.
       if (opts.emoji_style && opts.emoji_style !== "moderate") payload.emoji_style = opts.emoji_style
-      // remove_silence is an AI-mode concept only. A hand-picked manual range
-      // is a deliberate cut, so never re-cut it for silence (would shift the
-      // user's chosen timing). Gate the field on mode rather than let a stale
-      // AI-mode value leak through.
-      if (opts.remove_silence && !isManual) payload.remove_silence = true
+      // remove_silence applies in BOTH modes. It was gated out of manual mode
+      // on the theory that trimming would "shift the user's chosen timing" —
+      // but the backend removes silence INSIDE each already-cut clip (extract
+      // → desilence, see _process_clips_parallel), so the picked range
+      // boundaries are untouched; the clip just gets tighter. The gate only
+      // made hand-picked clips the one place pacing could NOT be fixed.
+      if (opts.remove_silence) payload.remove_silence = true
 
       if (isManual) {
         payload.mode = "manual"
