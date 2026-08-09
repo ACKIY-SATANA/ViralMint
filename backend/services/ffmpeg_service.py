@@ -938,18 +938,34 @@ async def convert_aspect_ratio(
             )
 
         filter_flag = "-filter_complex" if method == "blur_fill" else "-vf"
-        cmd = [
+        common = [
             "ffmpeg", "-y", "-i", str(video_path),
             filter_flag, vf,
             "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-            "-c:a", "aac", "-b:a", "128k",
-            str(output_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            logger.error(f"Aspect ratio conversion failed: {result.stderr[:500]}")
-            raise VideoGenerationError(f"FFmpeg aspect conversion failed: {result.stderr[:200]}")
-        return output_path
+        # Audio is untouched by an aspect conversion — copy it instead of
+        # paying a 128k AAC generation every pass. Chained tools stack these:
+        # reframe → captions → watermark used to re-encode the same voice
+        # track three times for three geometry operations. The copy is
+        # invalid for codecs mp4 can't carry (Opus/Vorbis out of a WebM/MKV
+        # source), so the re-encode stays as the second rung.
+        last_err = ""
+        for label, aargs in (("copy", ["-c:a", "copy"]),
+                             ("re-encode", ["-c:a", "aac", "-b:a", "128k"])):
+            result = subprocess.run(common + aargs + [str(output_path)],
+                                    capture_output=True, text=True, timeout=300)
+            if result.returncode == 0:
+                return output_path
+            last_err = result.stderr[-500:]
+            logger.warning("Aspect conversion (%s audio) failed: %s", label, last_err[:200])
+            # A failed pass leaves a partial file behind; drop it so the next
+            # attempt isn't fooled by it and a failure can't look like a result.
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        logger.error(f"Aspect ratio conversion failed: {last_err}")
+        raise VideoGenerationError(f"FFmpeg aspect conversion failed: {last_err[:200]}")
 
     return await asyncio.to_thread(_run)
 

@@ -25,6 +25,7 @@ OSS adaptation vs the SaaS variant:
 """
 import asyncio
 import logging
+import math
 import subprocess
 from pathlib import Path
 
@@ -265,8 +266,134 @@ async def run_tool_reframe(job_id: str, in_path: Path, user_id: str = "local"):
 
 # ── Audio enhance (denoise + loudness normalize) ───────────────────────────
 
+# The denoise half of the chain. highpass/lowpass trim rumble + hiss, afftdn
+# removes broadband noise. Kept separate from loudnorm because the measurement
+# pass has to run THROUGH it — see _measure_loudness.
+AUDIO_DENOISE_FILTER = "highpass=f=80,lowpass=f=12000,afftdn=nr=12"
+
+# EBU R128 targets. -16 LUFS matches YouTube/TikTok playback reference within
+# ~2 LU.
+_TARGET_I = -16.0
+_TARGET_TP = -1.5
+
+# Dynamic single-pass fallback — used only when the measurement pass fails.
+AUDIO_ENHANCE_FILTER = (
+    f"{AUDIO_DENOISE_FILTER},loudnorm=I={_TARGET_I}:TP={_TARGET_TP}:LRA=11"
+)
+
+
+async def _measure_loudness(path: Path, through_denoise: bool = False) -> dict | None:
+    """Pass 1: decode audio only and return loudnorm's measurement JSON
+    (input_i / input_tp / input_lra / input_thresh / target_offset), or None
+    when the file can't be measured. No video decode, no output written.
+
+    `through_denoise` prefixes the measurement with the same denoise chain the
+    apply pass uses. The enhance path MUST measure this way: loudnorm receives
+    the denoised signal, and feeding it raw-audio measurements makes the
+    linear gain wrong (the denoiser changes the level between measurement and
+    application). Skip decisions measure raw (the default) — "is this file
+    already at target AS-IS" is a question about the file, not about the
+    filter chain.
+    """
+    import json as _json
+    import re as _re
+
+    af = f"loudnorm=I={_TARGET_I}:TP={_TARGET_TP}:LRA=11:print_format=json"
+    if through_denoise:
+        af = f"{AUDIO_DENOISE_FILTER},{af}"
+
+    def _run():
+        r = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-nostats", "-vn", "-sn", "-dn",
+             "-i", str(path), "-af", af, "-f", "null", "-"],
+            capture_output=True, text=True, timeout=600,
+        )
+        # loudnorm prints its JSON block mid-stderr; ffmpeg appends the mux
+        # summary AFTER it, so an end-anchored match never fires. Take the
+        # last {...} block that parses and carries the expected keys.
+        for blob in reversed(_re.findall(r"\{[^{}]*\}", r.stderr)):
+            try:
+                d = _json.loads(blob)
+                for k in ("input_i", "input_tp", "input_lra", "input_thresh"):
+                    # loudnorm reports "-inf" for digital silence. Note that
+                    # float("-inf") PARSES — a bare float() call is not the
+                    # guard it looks like — and feeding -inf into the linear
+                    # filter yields a NaN target and an ffmpeg the arg parser
+                    # rejects. Demand a finite number.
+                    if not math.isfinite(float(d[k])):
+                        raise ValueError(f"{k} is not finite: {d[k]!r}")
+                return d
+            except (KeyError, ValueError):
+                continue
+        return None
+
+    try:
+        return await asyncio.to_thread(_run)
+    except Exception:
+        return None
+
+
+def _is_already_normalized(measured: dict | None) -> bool:
+    """True when the audio is close enough to target that enhancement can only
+    do harm: within 1 LU of -16 LUFS with true peak at or under -1.0 dBTP.
+    Conservative on purpose — an unmeasurable file is NOT "already done"."""
+    if not measured:
+        return False
+    try:
+        i, tp = float(measured["input_i"]), float(measured["input_tp"])
+    except (KeyError, ValueError):
+        return False
+    if not (math.isfinite(i) and math.isfinite(tp)):
+        return False   # digital silence reads as -inf, which is not "done"
+    return abs(i - _TARGET_I) <= 1.0 and tp <= -1.0
+
+
+def _linear_filter(measured: dict) -> str:
+    """The pass-2 filter chain: denoise + linear (fixed-gain) loudnorm fed
+    with the pass-1 measurement.
+
+    Single-pass loudnorm is not a less accurate version of the same thing — it
+    is a DIFFERENT algorithm. One pass runs in DYNAMIC mode, continuously
+    riding the gain, which is audible as pumping/breathing on real content and
+    crushes loudness range (an already-normalized clip measured LRA 1.4 → 1.0
+    → 0.8 across repeat passes while the level stayed at -16). Linear mode
+    applies a single gain offset computed from the measurement — transparent,
+    and it preserves the source's dynamics.
+
+    ffmpeg SILENTLY reverts linear=true to dynamic mode in two cases
+    (af_loudnorm.c), and both must be pre-empted here or high-dynamics content
+    gets crushed again:
+
+      * measured_LRA above the LRA target → raise the target to the
+        measurement (in linear mode LRA is only this revert threshold).
+      * the needed gain would push the measured true peak past TP → ffmpeg
+        does NOT apply less gain, it flips to dynamic. Pre-clamp the target
+        level to what the TP headroom allows: quieter-but-clean, one fixed
+        gain, no pumping.
+    """
+    try:
+        input_i = float(measured["input_i"])
+        input_tp = float(measured["input_tp"])
+        lra_target = min(50.0, max(11.0, float(measured["input_lra"]) + 1.0))
+    except (KeyError, ValueError):
+        input_i, input_tp, lra_target = -24.0, -6.0, 11.0
+    gain_needed = _TARGET_I - input_i
+    headroom = (_TARGET_TP - 0.1) - input_tp  # 0.1 dB margin under the revert check
+    eff_target_i = input_i + min(gain_needed, headroom)
+    # loudnorm rejects I outside [-70, -5]; attenuation (negative gain) is fine.
+    eff_target_i = max(-70.0, min(-5.0, eff_target_i))
+    return (
+        f"{AUDIO_DENOISE_FILTER},"
+        f"loudnorm=I={eff_target_i:.2f}:TP={_TARGET_TP}:LRA={lra_target:g}"
+        f":measured_I={measured['input_i']}:measured_TP={measured['input_tp']}"
+        f":measured_LRA={measured['input_lra']}:measured_thresh={measured['input_thresh']}"
+        f":linear=true"
+    )
+
+
 async def run_tool_audio_enhance(job_id: str, in_path: Path, user_id: str = "local"):
     from backend.api.tools import tool_out_path
+    from backend.core.ws_manager import ws_manager
     from backend.services.clip_extractor import _has_video_stream
     from backend.services.ffmpeg_service import has_audio_stream
     logger.info("TASK START tool:audio_enhance | job=%s", job_id[:8])
@@ -282,6 +409,29 @@ async def run_tool_audio_enhance(job_id: str, in_path: Path, user_id: str = "loc
             )
             return
 
+        # Measure first — enhancing already-normalized audio is a harmful
+        # no-op. It cannot improve the level and it costs dynamics (another
+        # denoise smear + another compression pass) plus a lossy re-encode
+        # generation. Same pass-through contract as the no-audio-track case
+        # above, with a warning that says why.
+        raw = await _measure_loudness(in_path)
+        if _is_already_normalized(raw):
+            import shutil
+            out_path = tool_out_path(job_id, in_path.suffix.lower() or ".mp4")
+            await asyncio.to_thread(shutil.copy2, str(in_path), str(out_path))
+            await ws_manager.send_constraint_warning(
+                constraint="audio_enhance_noop",
+                message=(f"Audio is already at target loudness "
+                         f"({raw['input_i']} LUFS) — returned unchanged. "
+                         "Re-enhancing normalized audio would only degrade it."),
+                severity="info",
+                user_id=user_id,
+            )
+            await _tool_success(job_id, out_path, cleanup, user_id)
+            logger.info("TASK DONE  tool:audio_enhance (no-op, already normalized) | job=%s",
+                        job_id[:8])
+            return
+
         await _tool_progress(job_id, 20, "Denoising + normalizing audio...", user_id)
         has_video = await asyncio.to_thread(_has_video_stream, in_path)
         # The container follows what we ENCODE: an audio-only source (the tool
@@ -289,10 +439,19 @@ async def run_tool_audio_enhance(job_id: str, in_path: Path, user_id: str = "loc
         # .webm to H.264 is rejected outright by the WebM muxer.
         out_path = tool_out_path(job_id, ".mp4" if has_video else ".mp3")
 
+        # Pass 1 of two: measure the DENOISED signal. loudnorm receives
+        # afftdn's output, so measuring the raw audio makes the linear gain
+        # wrong — the denoiser changes the level between measurement and
+        # application. On failure we fall back to the old single-pass filter,
+        # which normalizes but in dynamic mode.
+        measured = await _measure_loudness(in_path, through_denoise=True)
+        af = _linear_filter(measured) if measured else AUDIO_ENHANCE_FILTER
+
         def _enhance():
             # highpass/lowpass trim rumble + hiss; afftdn denoise; loudnorm
-            # brings the track to a broadcast-style target loudness.
-            af = "highpass=f=80,lowpass=f=12000,afftdn=nr=12,loudnorm=I=-16:TP=-1.5:LRA=11"
+            # applies ONE fixed gain from the pass-1 measurement (linear=true)
+            # instead of continuously riding it, which is what made repeat
+            # passes audibly pump and crushed loudness range.
             base = ["ffmpeg", "-y", "-i", str(in_path), "-af", af]
             if not has_video:
                 res = subprocess.run(

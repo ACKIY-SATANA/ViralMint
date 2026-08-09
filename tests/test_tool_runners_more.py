@@ -420,8 +420,12 @@ class TestAudioEnhance:
              patch.object(trun, "subprocess") as sp:
             sp.run.side_effect = _run
             await trun.run_tool_audio_enhance("j1", Path("/nonexistent/in.webm"))
-        assert len(calls) == 2, "the re-encode pass must run after the copy pass"
-        assert "libx264" in calls[1]
+        # Ignore the two loudness MEASUREMENT passes (`-f null`, no output
+        # file) that now precede the encode — only the encode ladder is under
+        # test here.
+        encodes = [c for c in calls if "null" not in c]
+        assert len(encodes) == 2, "the re-encode pass must run after the copy pass"
+        assert "libx264" in encodes[1]
         terminal_spies["success"].assert_awaited()
 
     async def test_a_zero_byte_output_is_a_failure_not_a_success(
