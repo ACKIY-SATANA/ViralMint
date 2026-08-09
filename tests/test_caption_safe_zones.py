@@ -169,3 +169,40 @@ class TestStylesApiIsDerived:
         promised centred text the renderer never produces."""
         from backend.api.captions import BUILTIN_STYLES
         assert all(s["alignment"] == 2 for s in BUILTIN_STYLES)
+
+
+class TestCustomStyleAlignment:
+    """The safe-zone floor only has meaning under a BOTTOM alignment — under a
+    mid or top one libass ignores MarginV entirely, so the style pins to the
+    literal centre of the frame and the floor cannot move it off the chrome.
+
+    Both places a custom style can be born defaulted to 5 (mid-centre), which
+    the engine's own notes call broken.
+    """
+
+    def test_a_created_style_defaults_to_bottom_centre(self):
+        from backend.api.captions import CaptionStyleCreate
+        assert CaptionStyleCreate(name="mine").alignment == 2
+
+    @pytest.mark.parametrize("given,expected", [
+        (1, 1), (2, 2), (3, 3),          # bottom row — kept
+        (5, 2), (8, 2), (4, 2), (None, 2), ("x", 2), (99, 2),
+    ])
+    def test_a_non_bottom_alignment_is_normalized(self, given, expected):
+        from backend.api.captions import normalize_alignment
+        assert normalize_alignment(given) == expected
+
+    def test_the_create_route_normalizes_what_the_client_sent(self):
+        """Not just the default — a client that explicitly posts 5 would
+        otherwise store a style the floor cannot reach."""
+        import inspect
+        from backend.api import captions
+        src = inspect.getsource(captions.create_caption_style)
+        assert "normalize_alignment(body.alignment)" in src
+
+    def test_the_prompt_no_longer_offers_the_broken_option(self):
+        """The model was being told 5=center is a valid choice."""
+        from backend.api import captions
+        import inspect
+        src = inspect.getsource(captions)
+        assert "5=center" not in src

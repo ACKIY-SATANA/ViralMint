@@ -28,7 +28,10 @@ class CaptionStyleCreate(BaseModel):
     outline_color: str = "&H00000000"
     outline_width: int = 3
     shadow_depth: int = 1
-    alignment: int = 5
+    # 2 = bottom-centre, matching every built-in. NOT 5: under a mid alignment
+    # libass IGNORES MarginV, so the style pins to the literal centre of the
+    # frame AND the platform safe-zone floor silently does nothing.
+    alignment: int = 2
     margin_v: int = 80
     words_per_group: int = 3
     description: Optional[str] = None
@@ -107,6 +110,19 @@ BUILTIN_STYLES = [
 ]
 
 
+def normalize_alignment(value) -> int:
+    """Force a caption style onto a BOTTOM alignment (ASS numpad 1/2/3).
+
+    Under a mid or top alignment libass IGNORES MarginV: the style pins to the
+    literal centre of the frame, and the platform safe-zone floor
+    (services/safe_zones.py) cannot move it off the destination app's chrome.
+    Every built-in style is bottom-aligned for exactly this reason; custom and
+    AI-generated styles used to default to 5, which is where an unreviewed
+    value comes from.
+    """
+    return value if value in (1, 2, 3) else 2
+
+
 def _style_to_dict(s: CaptionStyle) -> dict:
     return {
         "id": s.id,
@@ -162,7 +178,7 @@ async def create_caption_style(body: CaptionStyleCreate):
             outline_color=body.outline_color,
             outline_width=body.outline_width,
             shadow_depth=body.shadow_depth,
-            alignment=body.alignment,
+            alignment=normalize_alignment(body.alignment),
             margin_v=body.margin_v,
             words_per_group=body.words_per_group,
             description=body.description,
@@ -214,7 +230,8 @@ Return ONLY a JSON object with these fields (no other text):
   "outline_color": "ASS color for text outline",
   "outline_width": number (0-6),
   "shadow_depth": number (0-4),
-  "alignment": number (ASS numpad: 2=bottom-center, 5=center, 8=top-center),
+  "alignment": number — always 2 (bottom-center). Other values make the
+               renderer ignore margin_v and the platform safe-zone floor,
   "margin_v": number (20-120, vertical margin in pixels),
   "words_per_group": number (1-12, how many words shown at once),
   "description": "one-line description of the style"
@@ -263,7 +280,9 @@ async def generate_caption_style(body: AIGenerateRequest):
     config["font_size_landscape"] = max(30, min(54, config.get("font_size_landscape", 42)))
     config["outline_width"] = max(0, min(6, config.get("outline_width", 3)))
     config["shadow_depth"] = max(0, min(4, config.get("shadow_depth", 1)))
-    config["alignment"] = config.get("alignment", 5) if config.get("alignment") in (1,2,3,4,5,6,7,8,9) else 5
+    # An AI-generated style is exactly where an unreviewed alignment comes
+    # from, and a non-bottom one silently disables the safe-zone floor.
+    config["alignment"] = normalize_alignment(config.get("alignment"))
     config["margin_v"] = max(20, min(120, config.get("margin_v", 80)))
     config["words_per_group"] = max(1, min(12, config.get("words_per_group", 3)))
 
