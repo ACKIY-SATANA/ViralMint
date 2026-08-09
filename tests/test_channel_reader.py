@@ -375,3 +375,140 @@ class TestYtdlpLayer:
         mod.YoutubeDL = YDL
         monkeypatch.setitem(sys.modules, "yt_dlp", mod)
         assert CR._fetch_via_ytdlp("UC1", 10) == []
+
+
+# ── the full channel fetch, top to bottom ───────────────────────────────────
+
+class TestGetYoutubeChannel:
+    """The orchestrator over the three fetch layers, plus the cache."""
+
+    def _channels_resp(self, uploads="UUabc123"):
+        return {"items": [{
+            "id": "UCabc123",
+            "snippet": {"title": "My Channel", "description": "d",
+                        "thumbnails": {"medium": {"url": "t.jpg"}},
+                        "customUrl": "@mychan"},
+            "statistics": {"subscriberCount": "5000", "viewCount": "999999",
+                           "videoCount": "120"},
+            "contentDetails": {"relatedPlaylists": {"uploads": uploads}},
+        }]}
+
+    def _playlist_item(self, vid="v1"):
+        return {"snippet": {"title": "A video", "description": "",
+                            "publishedAt": "2026-01-01T00:00:00Z",
+                            "thumbnails": {"medium": {"url": "t.jpg"}}},
+                "contentDetails": {"videoId": vid}}
+
+    def _videos_resp(self, vid="v1"):
+        return {"items": [{
+            "id": vid,
+            "snippet": {"title": "A video", "description": "",
+                        "thumbnails": {"medium": {"url": "t.jpg"}},
+                        "publishedAt": "2026-01-01T00:00:00Z"},
+            "statistics": {"viewCount": "5000", "likeCount": "100",
+                           "commentCount": "10"},
+            "contentDetails": {"duration": "PT2M"},
+        }]}
+
+    def test_the_happy_path_returns_channel_and_videos(self, google_stub):
+        _install_youtube(google_stub, _YouTube(
+            channels=_Call(self._channels_resp()),
+            playlist=_Call({"items": [self._playlist_item()],
+                            "nextPageToken": None}),
+            videos=_Call(self._videos_resp())))
+        out = asyncio.run(CR.get_youtube_channel("UCabc123", "KEY"))
+        assert out["connected"] is True
+        assert out["channel"]["title"] == "My Channel"
+        assert out["channel"]["subscriber_count"] == 5000
+        assert len(out["videos"]) == 1
+
+    def test_an_unknown_channel_returns_an_empty_shape_not_none(self, google_stub):
+        """The UI renders off this dict; None would be a crash."""
+        _install_youtube(google_stub, _YouTube(channels=_Call({"items": []})))
+        out = asyncio.run(CR.get_youtube_channel("UCnope", "KEY"))
+        assert out["channel"] is None and out["videos"] == []
+
+    def test_it_falls_back_to_the_search_api(self, google_stub):
+        """Layer 2: the uploads playlist is permanently broken for some
+        channels — the channel must still list."""
+        _install_youtube(google_stub, _YouTube(
+            channels=_Call(self._channels_resp()),
+            playlist=_Call(_HttpError(404)),
+            search=_Call({"items": [{"id": {"videoId": "v9"},
+                                     "snippet": {"title": "From search"}}]}),
+            videos=_Call(self._videos_resp("v9"))))
+        out = asyncio.run(CR.get_youtube_channel("UCabc123", "KEY"))
+        assert len(out["videos"]) == 1
+
+    def test_it_falls_back_to_ytdlp_when_both_apis_fail(self, google_stub,
+                                                        monkeypatch):
+        """Layer 3: no quota, no key. The last thing between the user and an
+        empty Channels page."""
+        import types as _t
+        mod = _t.ModuleType("yt_dlp")
+
+        class YDL:
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def extract_info(self, url, download=False):
+                return {"entries": [{"id": "v7", "title": "From yt-dlp",
+                                     "view_count": 42, "duration": 30}]}
+        mod.YoutubeDL = YDL
+        monkeypatch.setitem(sys.modules, "yt_dlp", mod)
+
+        _install_youtube(google_stub, _YouTube(
+            channels=_Call(self._channels_resp()),
+            playlist=_Call(_HttpError(500)),
+            search=_Call({"items": []})))
+        out = asyncio.run(CR.get_youtube_channel("UCabc123", "KEY"))
+        assert len(out["videos"]) == 1
+
+    def test_every_layer_failing_still_returns_the_channel(self, google_stub,
+                                                           monkeypatch):
+        """Knowing the channel exists but not its videos is a better answer
+        than an error."""
+        import types as _t
+        mod = _t.ModuleType("yt_dlp")
+
+        class YDL:
+            def __init__(self, opts):
+                raise RuntimeError("no")
+        mod.YoutubeDL = YDL
+        monkeypatch.setitem(sys.modules, "yt_dlp", mod)
+        _install_youtube(google_stub, _YouTube(
+            channels=_Call(self._channels_resp()),
+            playlist=_Call(_HttpError(500)),
+            search=_Call({"items": []})))
+        out = asyncio.run(CR.get_youtube_channel("UCabc123", "KEY"))
+        assert out["channel"]["title"] == "My Channel" and out["videos"] == []
+
+    def test_the_result_is_cached(self, google_stub):
+        """Listing a channel is up to 100 quota units; the second click in a
+        minute must not pay it again."""
+        calls = _Call(self._channels_resp())
+        _install_youtube(google_stub, _YouTube(
+            channels=calls,
+            playlist=_Call({"items": [self._playlist_item()], "nextPageToken": None}),
+            videos=_Call(self._videos_resp())))
+        asyncio.run(CR.get_youtube_channel("UCcached", "KEY"))
+        before = len(calls.kwargs)
+        asyncio.run(CR.get_youtube_channel("UCcached", "KEY"))
+        assert len(calls.kwargs) == before, "the second call must hit the cache"
+
+    def test_a_different_page_is_a_different_cache_entry(self, google_stub):
+        calls = _Call(self._channels_resp())
+        _install_youtube(google_stub, _YouTube(
+            channels=calls,
+            playlist=_Call({"items": [self._playlist_item()], "nextPageToken": None}),
+            videos=_Call(self._videos_resp())))
+        asyncio.run(CR.get_youtube_channel("UCpaged", "KEY"))
+        n = len(calls.kwargs)
+        asyncio.run(CR.get_youtube_channel("UCpaged", "KEY", page_token="p2"))
+        assert len(calls.kwargs) > n, "page 2 is not page 1"
