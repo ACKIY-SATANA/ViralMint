@@ -64,6 +64,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   you a download that doesn't play.
 
 ### Fixed
+- **Sound effects no longer make the voice ramp up in volume.** The mixer let
+  FFmpeg average the tracks instead of summing them, and every effect counted
+  as "playing" from the very start of the video — so the narration began
+  roughly ten times too quiet and grew louder as each effect finished.
+  Measured on a 20-second clip with 8 effects: it climbed 16.6 dB from start to
+  end. It now holds a steady level, with a limiter so the mix can't clip.
+- **The "heavy" sound-effect style stopped dropping a third of its effects.**
+  It planned up to 25 and the mixer quietly stopped at 15, while still
+  reporting the planned number back to you.
+- **A news article that only has a headline is now scored instead of
+  discarded.** Google News links go through a redirector whose target often
+  can't be fetched, leaving a title and no body — which the analyzer treated as
+  an empty article and dropped. On some searches that was most of the results.
+- **Chat messages no longer arrive twice.** Under some mounting orders the app
+  opened a second WebSocket without closing the first, and both delivered every
+  server event to the same handlers — duplicate replies, doubled streaming
+  text, duplicate job cards.
+- **Progress cards stopped showing internal job names.** A tool job announced
+  itself as "tool:gif complete"; it now reads "Gif complete".
 - **Merging a silent clip no longer throws away the other clips' audio.**
   Merge Clips normalizes every input before stitching, but it did not normalize
   the stream layout — a clip with no audio came out video-only, and the
