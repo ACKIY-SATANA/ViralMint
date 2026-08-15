@@ -25,8 +25,8 @@ Published: {published_at}
 Article text:
 {full_text}
 
-1. FILTER: Is this article high-quality and relevant to the query? If it's clickbait with no substance, a stub/paywall, or completely off-topic — set virality_score to 0.
-2. SCORE: Rate viral video potential 0-100 based on: controversy, novelty, emotional impact, broad appeal, timeliness. Be generous — most real news from reputable sources should score 30-50+. Only score 0 for true garbage.
+1. FILTER: Is this article relevant to the query? If it's completely off-topic — set virality_score to 0. Note: if only a title/headline is provided (no full text), score based on the headline's news value — do NOT penalize for missing text.
+2. SCORE: Rate viral video potential 0-100 based on: controversy, novelty, emotional impact, broad appeal, timeliness. Be generous — most real news from reputable sources should score 30-60+. Only score 0 for completely irrelevant articles.
 3. ANALYZE: Provide deep analysis useful for creating a video.
 
 Return ONLY this JSON object, no explanation or markdown fences:
@@ -60,10 +60,19 @@ async def _analyze_one(
     from backend.core.ai_provider import get_ai_client
 
     text = article.get("full_text") or article.get("summary") or ""
-    if not text:
+    title = article.get("title", "")
+    if not text and not title:
         article["virality_score"] = 0
         article["analysis"] = {"error": "No article text available"}
         return article
+
+    # Headline-only is a normal outcome, not a failure: Google News links go
+    # through a redirector whose target often can't be resolved, so the scraper
+    # comes back with a title and nothing else. Scoring those zero threw away
+    # most of a news scout's results. The prompt is told not to penalise a
+    # missing body so a strong headline can still score.
+    if not text:
+        text = title
 
     prompt = SINGLE_ARTICLE_PROMPT.format(
         query=query,
