@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Security
+- **Batch download refuses non-http links.** `POST /api/downloaded/batch-download`
+  accepted any string as a URL and handed it to yt-dlp, so a `file:///etc/passwd`
+  entry started a job. Every URL must now be a full `http(s)` link, checked at
+  the endpoint itself rather than at one of its callers.
+- **Subtitle language codes are shape-checked.** yt-dlp treats the subtitle
+  language list as regexes, so a `.*` would pull every track a video has — the
+  same fan-out the explicit "all" rejection exists to prevent. Entries must now
+  look like real language codes.
 - **SPA path-traversal fix.** The frontend catch-all route served any file
   resolved under the `dist` directory without a containment check, so a
   `../`-laden request could read files outside the built bundle. The handler
@@ -34,6 +42,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Added
+- **Video Download.** A new tool page for the thing the app could always do but
+  never let you choose about: paste up to 20 links and pull the videos down
+  from YouTube, TikTok, Bilibili, X and the 1,800+ other sites yt-dlp supports.
+  Pick a maximum resolution, keep subtitles as a separate `.srt` or embed them
+  as a selectable track, choose MP4 or MKV, and optionally embed cover art,
+  tags and chapter markers. Every option degrades instead of failing — a source
+  with nothing at the size you asked for gives you the closest available rather
+  than an error, and a container that the codecs can't stream-copy into comes
+  out as MKV instead of a failed merge. The result then tells you what you
+  actually got: the delivered resolution and container per video, which
+  subtitle files were kept, and whether the embed extras had to be dropped.
+  Unlike the other download paths this one skips transcription — it was asked
+  for the files, and Library can analyze on demand.
 - **Compress Video.** A new tool for getting a file under an email, chat or
   upload limit. Two independent dials — a target resolution and how hard to
   squeeze at that size — with the output dimensions stated before you run it.
@@ -64,6 +85,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   you a download that doesn't play.
 
 ### Fixed
+- **Deleting a downloaded video sweeps its subtitle files.** Subtitles kept
+  alongside a video have no database record of their own, so they used to
+  survive the row that owned them and accumulate on disk forever. Delete and
+  the stale-record cleanup both sweep them now.
 - **Sound effects no longer make the voice ramp up in volume.** The mixer let
   FFmpeg average the tracks instead of summing them, and every effect counted
   as "playing" from the very start of the video — so the narration began

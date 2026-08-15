@@ -30,6 +30,7 @@ import ZoomInMapOutlinedIcon from "@mui/icons-material/ZoomInMapOutlined"
 import CompressOutlinedIcon from "@mui/icons-material/CompressOutlined"
 import CropOutlinedIcon from "@mui/icons-material/CropOutlined"
 import VolumeOffOutlinedIcon from "@mui/icons-material/VolumeOffOutlined"
+import DownloadForOfflineOutlinedIcon from "@mui/icons-material/DownloadForOfflineOutlined"
 
 // ── Catalog ────────────────────────────────────────────────────────────────
 //
@@ -40,6 +41,13 @@ import VolumeOffOutlinedIcon from "@mui/icons-material/VolumeOffOutlined"
 
 const TOOLS = [
   // Video — visual / structural edits
+  {
+    id: "video-download",
+    title: "Video Download",
+    description: "Paste a link and pull the video down — pick the quality, keep or embed subtitles.",
+    icon: <DownloadForOfflineOutlinedIcon />,
+    category: "video",
+  },
   {
     id: "merge-clips",
     title: "Merge Clips",
