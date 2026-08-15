@@ -231,7 +231,14 @@ export default function ToolRunner({
     if (w > 0 && h > 0) setInputSize({ w, h })
   }
 
-  const isVideoInput = !!file && (file.type || "").startsWith("video/")
+  // `file.type` is not reliable: browsers report "" for .mkv and some .mov
+  // files, and those are both in the default accept list. Falling back to the
+  // extension keeps the preview (and therefore Crop's canvas) working for
+  // them instead of silently showing nothing.
+  const isVideoInput = !!file && (
+    (file.type || "").startsWith("video/")
+    || /\.(mp4|mov|mkv|webm|m4v)$/i.test(file.name || "")
+  )
 
   const toolInput = useMemo(() => ({
     duration: inputDuration,

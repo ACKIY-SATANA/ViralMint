@@ -34,6 +34,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Added
+- **Compress Video.** A new tool for getting a file under an email, chat or
+  upload limit. Two independent dials — a target resolution and how hard to
+  squeeze at that size — with the output dimensions stated before you run it.
+  Asking for a resolution larger than the source keeps the source size instead
+  of upscaling, and a file that comes out bigger than it went in says so rather
+  than being handed back silently. Local FFmpeg; nothing leaves your machine.
+- **Crop Video.** Drag a box over the frame and keep just that part — the
+  manual counterpart to Reframe, which picks the framing for you. Free-form or
+  snapped to 9:16, 1:1 or 16:9, with the exact pixel crop shown as you drag.
+  The audio track is copied across untouched.
+- **Remove Audio.** Strip a video's sound entirely, as its own operation on the
+  Transform tool and its own card in the Tools hub. This is not the old "Mute"
+  volume preset, which re-encoded the audio to silence and left the (silent)
+  track in the file; this removes the track. A video that never had audio still
+  gets its file back, with a note explaining why nothing appears to have
+  changed.
+- **A live preview of the file you're about to process.** Selecting a video on
+  any tool page now mounts the actual video instead of showing a filename and a
+  byte count, and the tool's own controls can read its real size — which is
+  what makes the crop box possible.
 - **A job can no longer report success on a broken artifact.** Every
   file-producing tool now passes its output through one gate before the job is
   marked successful: the file must exist, be non-empty, be readable by ffprobe,
@@ -44,6 +64,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   you a download that doesn't play.
 
 ### Fixed
+- **Merging a silent clip no longer throws away the other clips' audio.**
+  Merge Clips normalizes every input before stitching, but it did not normalize
+  the stream layout — a clip with no audio came out video-only, and the
+  stitcher takes its layout from the first file. A silent intro card in front
+  of a talking video therefore produced a merge with no sound at all, reported
+  as a success. Every clip now reaches the stitch with an audio track, silent
+  or not.
+- **The app survives browser page-translation.** Chrome, Edge, Safari and the
+  Baidu/QQ equivalents rewrap text into elements React is still tracking, and
+  React's next update then crashed the whole interface to an error screen —
+  most easily in Chat, where streaming text changes constantly. Since the page
+  declares itself as English, this was offered to every non-English speaker on
+  first load. It no longer crashes. (This stops the crash; it does not
+  translate the app.)
 - **Captions stop being burned under the platform's own UI.** Caption margins
   were pixel offsets tuned for a 1920-tall frame and nothing ever checked them
   against the interface TikTok/Reels/Shorts draw *on top of* the video. Three
