@@ -28,6 +28,7 @@ import FormatListNumberedIcon from "@mui/icons-material/FormatListNumbered"
 import ContentCutOutlinedIcon from "@mui/icons-material/ContentCutOutlined"
 import ZoomInMapOutlinedIcon from "@mui/icons-material/ZoomInMapOutlined"
 import CompressOutlinedIcon from "@mui/icons-material/CompressOutlined"
+import CropOutlinedIcon from "@mui/icons-material/CropOutlined"
 
 // ── Catalog ────────────────────────────────────────────────────────────────
 //
@@ -57,6 +58,13 @@ const TOOLS = [
     title: "Compress Video",
     description: "Shrink a file for email, chat, or an upload limit. Pick a size and a strength.",
     icon: <CompressOutlinedIcon />,
+    category: "video",
+  },
+  {
+    id: "crop",
+    title: "Crop Video",
+    description: "Drag a box over the frame and keep just that part. Free-form or a fixed shape.",
+    icon: <CropOutlinedIcon />,
     category: "video",
   },
   {

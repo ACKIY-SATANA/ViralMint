@@ -731,6 +731,38 @@ async def compress_tool(
     return {"job_id": job.id}
 
 
+@router.post("/crop")
+async def crop_tool(
+    file: UploadFile = File(...),
+    x: float = Form(...),
+    y: float = Form(...),
+    w: float = Form(...),
+    h: float = Form(...),
+):
+    """Crop a video to a rectangle you drew on the frame.
+
+    The box arrives NORMALIZED (0-1, origin top-left) so it's independent of
+    whatever size the preview was rendered at — the runner converts against
+    the real source dimensions. The manual counterpart to `/reframe`, which
+    picks the framing for you.
+    """
+    for name, value in (("x", x), ("y", y), ("w", w), ("h", h)):
+        if not 0.0 <= value <= 1.0:
+            raise HTTPException(400, f"{name} must be between 0 and 1")
+    if w <= 0 or h <= 0:
+        raise HTTPException(400, "Drag a crop box over the frame first")
+
+    from backend.agents.job_helper import create_job
+    from backend.core.task_runner import dispatch
+    from backend.core.tool_runners import run_tool_crop
+    job = await create_job("tool:crop", "local", {
+        "x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4),
+    })
+    in_path = await save_upload(file, job.id, VIDEO_EXTS, VIDEO_MAX_BYTES)
+    dispatch(run_tool_crop(job.id, in_path, x, y, w, h))
+    return {"job_id": job.id}
+
+
 @router.post("/auto-zoom")
 async def auto_zoom_tool(
     file: UploadFile = File(...),

@@ -1936,3 +1936,114 @@ async def run_tool_compress(
         )
     except Exception as e:
         await _tool_fail(job_id, e, cleanup, user_id, "compress")
+
+
+# ── Video cropper (free, local ffmpeg) ─────────────────────────────────────
+
+
+# Below this many pixels on either axis there's no video left to speak of, and
+# libx264 starts refusing sizes outright. Rejecting here gives a sentence the
+# user can act on instead of an ffmpeg stderr dump.
+CROP_MIN_PIXELS = 16
+
+
+def crop_rect(
+    src_w: int, src_h: int, x: float, y: float, w: float, h: float,
+) -> tuple[int, int, int, int]:
+    """Normalized crop box (0-1, origin top-left) → ffmpeg's (w, h, x, y) px.
+
+    Pure, so the arithmetic that decides what the user actually gets is
+    testable without ffmpeg.
+
+    Three things happen here that all matter:
+
+    * **Clamp into the frame.** A normalized box is user input arriving over
+      HTTP. An out-of-range crop is an ffmpeg error, not a message anyone can
+      read, so the box is pinned inside the source rather than trusted.
+    * **Round every value to even.** libx264 rejects odd dimensions outright,
+      and with yuv420p chroma an odd OFFSET shifts colour against luma — so
+      offsets are rounded too, not just sizes.
+    * **Re-clamp after rounding.** Rounding a size up can push `x + w` one
+      pixel past the edge; ffmpeg fails on that, and it only shows up on
+      certain source sizes, which is the worst kind of bug to ship.
+
+    Raises ValueError when the box is too small to be a video.
+    """
+    if src_w <= 0 or src_h <= 0:
+        raise ValueError("Couldn't read this video's dimensions to crop it.")
+
+    x = min(max(float(x), 0.0), 1.0)
+    y = min(max(float(y), 0.0), 1.0)
+    w = min(max(float(w), 0.0), 1.0 - x)
+    h = min(max(float(h), 0.0), 1.0 - y)
+
+    cx = int(round(src_w * x)) & ~1
+    cy = int(round(src_h * y)) & ~1
+    cw = int(round(src_w * w)) & ~1
+    ch = int(round(src_h * h)) & ~1
+
+    # Rounding can overshoot the edge — pull back inside, then re-even.
+    cw = min(cw, src_w - cx) & ~1
+    ch = min(ch, src_h - cy) & ~1
+
+    if cw < CROP_MIN_PIXELS or ch < CROP_MIN_PIXELS:
+        raise ValueError(
+            "That crop area is too small — drag a larger box over the frame."
+        )
+    return cw, ch, cx, cy
+
+
+async def run_tool_crop(
+    job_id: str,
+    in_path: Path,
+    x: float, y: float, w: float, h: float,
+    user_id: str = "local",
+):
+    """Crop a video to a rectangle. Local FFmpeg only.
+
+    The manual counterpart to Reframe: Reframe decides the framing for you;
+    this one does exactly what you drew and nothing else. Audio is
+    stream-copied — cropping is a video-only operation and re-encoding the
+    track would cost quality for no reason.
+    """
+    from backend.api.tools import tool_out_path
+    from backend.services.video_utils import probe_media
+
+    logger.info("TASK START tool:crop | job=%s box=%.3f,%.3f,%.3f,%.3f",
+                job_id[:8], x, y, w, h)
+    cleanup = [in_path]
+    try:
+        src_w, src_h, _dur = await asyncio.to_thread(probe_media, in_path)
+        cw, ch, cx, cy = crop_rect(src_w, src_h, x, y, w, h)
+
+        out_path = tool_out_path(job_id, ".mp4")
+
+        def _encode():
+            cmd = [
+                "ffmpeg", "-y", "-i", str(in_path),
+                "-vf", f"crop={cw}:{ch}:{cx}:{cy}",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-pix_fmt", "yuv420p",
+                # Copy, don't re-encode: a crop doesn't touch the audio.
+                "-c:a", "copy",
+                "-movflags", "+faststart",
+                str(out_path),
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+            if res.returncode != 0:
+                raise RuntimeError(f"Crop failed: {res.stderr[-400:]}")
+
+        await _tool_progress(job_id, 30, "Cropping...", user_id)
+        await asyncio.to_thread(_encode)
+
+        await _tool_success(
+            job_id, out_path, cleanup, user_id,
+            extra_output={
+                "source_width": src_w, "source_height": src_h,
+                "width": cw, "height": ch, "x": cx, "y": cy,
+            },
+        )
+        logger.info("TASK DONE  tool:crop | job=%s %dx%d → %dx%d at %d,%d",
+                    job_id[:8], src_w, src_h, cw, ch, cx, cy)
+    except Exception as e:
+        await _tool_fail(job_id, e, cleanup, user_id, "crop")
