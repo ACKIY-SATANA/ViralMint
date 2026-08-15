@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react"
+import { useState, useRef, useCallback, useEffect, useMemo } from "react"
 import {
   Box, Typography, Stack, Button, LinearProgress, Alert, IconButton,
   Paper, Slide, ButtonBase, Tooltip,
@@ -15,6 +15,7 @@ import WarningAmberIcon from "@mui/icons-material/WarningAmber"
 import http from "../../api/http"
 import useAppStore from "../../store/appStore"
 import { toolJobTypeFor } from "./toolJobType"
+import ToolInputContext from "./ToolInputContext"
 import PageHero from "../PageHero"
 import { GlassPanel, glassPanelSx } from "../../utils/glassFx"
 
@@ -136,6 +137,16 @@ export default function ToolRunner({
   const [jobId, setJobId] = useState(null)
   const [error, setError] = useState("")
   const [dragging, setDragging] = useState(false)
+  // Object URL for the selected file, so the config panel can render the very
+  // frame it is about to operate on (Crop draws its box on it). Revoked on
+  // change/unmount — an un-revoked blob URL pins the whole file in memory.
+  const [filePreviewUrl, setFilePreviewUrl] = useState("")
+  // Duration + intrinsic pixel size of the loaded video, read off the mounted
+  // <video>'s metadata rather than a second server probe. 0 until it lands,
+  // and 0 forever for audio/image inputs — every consumer treats 0 as
+  // "unknown" and degrades instead of guessing.
+  const [inputDuration, setInputDuration] = useState(0)
+  const [inputSize, setInputSize] = useState({ w: 0, h: 0 })
   // Local snapshot of terminal state — the global store auto-removes the job
   // entry shortly after completion, which would blank our UI. Snapshot keeps
   // the download button visible until the user explicitly resets.
@@ -195,6 +206,39 @@ export default function ToolRunner({
     setResultOpen(false)
     setRailCollapsed(false)
   }, [])
+
+  // Live input preview. The utility tools were render-blind: a selected upload
+  // showed a filename and a byte count, so every config panel was a naked
+  // FFmpeg form. Mount the real media instead — and publish what the element
+  // reports so a tool can size its output honestly.
+  useEffect(() => {
+    if (!file) { setFilePreviewUrl(""); return }
+    const url = URL.createObjectURL(file)
+    setFilePreviewUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [file])
+
+  // A new input invalidates the old measurements. Cleared on `file` rather
+  // than inside handleFile so clearing the input resets them too.
+  useEffect(() => { setInputDuration(0); setInputSize({ w: 0, h: 0 }) }, [file])
+
+  const onLoadedMetadata = (e) => {
+    const el = e?.currentTarget
+    const d = el?.duration
+    if (Number.isFinite(d) && d > 0) setInputDuration(d)
+    const w = el?.videoWidth || 0
+    const h = el?.videoHeight || 0
+    if (w > 0 && h > 0) setInputSize({ w, h })
+  }
+
+  const isVideoInput = !!file && (file.type || "").startsWith("video/")
+
+  const toolInput = useMemo(() => ({
+    duration: inputDuration,
+    width: inputSize.w,
+    height: inputSize.h,
+    previewUrl: filePreviewUrl,
+  }), [inputDuration, inputSize, filePreviewUrl])
 
   const handleFile = (f) => {
     setError("")
@@ -432,19 +476,41 @@ export default function ToolRunner({
                 onChange={(e) => handleFile(e.target.files?.[0])}
               />
               {file ? (
-                <Stack direction="row" spacing={1.5} alignItems="center" justifyContent="center">
-                  <InsertDriveFileOutlinedIcon sx={{ color: "primary.main", fontSize: 32 }} />
-                  <Box sx={{ textAlign: "left" }}>
-                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                      {file.name}
-                    </Typography>
-                    <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                      {(file.size / 1024 / 1024).toFixed(1)} MB
-                    </Typography>
-                  </Box>
-                  <IconButton size="small" onClick={(e) => { e.stopPropagation(); setFile(null) }}>
-                    <CloseIcon fontSize="small" />
-                  </IconButton>
+                <Stack spacing={1.5} alignItems="center">
+                  <Stack direction="row" spacing={1.5} alignItems="center" justifyContent="center">
+                    <InsertDriveFileOutlinedIcon sx={{ color: "primary.main", fontSize: 32 }} />
+                    <Box sx={{ textAlign: "left" }}>
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {file.name}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                        {(file.size / 1024 / 1024).toFixed(1)} MB
+                        {inputSize.w > 0 && ` · ${inputSize.w}×${inputSize.h}`}
+                      </Typography>
+                    </Box>
+                    <IconButton size="small" onClick={(e) => { e.stopPropagation(); setFile(null) }}>
+                      <CloseIcon fontSize="small" />
+                    </IconButton>
+                  </Stack>
+                  {/* The mounted element is also where duration + intrinsic
+                      size come from (onLoadedMetadata), so it stays in the
+                      tree for video inputs even when a tool draws its own
+                      preview from `previewUrl`. */}
+                  {isVideoInput && filePreviewUrl && (
+                    <Box
+                      component="video"
+                      src={filePreviewUrl}
+                      controls
+                      playsInline
+                      preload="metadata"
+                      onLoadedMetadata={onLoadedMetadata}
+                      onClick={(e) => e.stopPropagation()}
+                      sx={{
+                        display: "block", width: "100%", maxHeight: 260,
+                        borderRadius: 1.5, bgcolor: "#000",
+                      }}
+                    />
+                  )}
                 </Stack>
               ) : (
                 <Stack spacing={1} alignItems="center">
@@ -460,10 +526,14 @@ export default function ToolRunner({
             </GlassPanel>
           )}
 
-          {/* Tool-specific config */}
+          {/* Tool-specific config. Wrapped in ToolInputContext so a tool's
+              own controls can size themselves against the real input instead
+              of assuming one. */}
           {children && (
             <GlassPanel sx={{ p: 2.5 }}>
-              {children}
+              <ToolInputContext.Provider value={toolInput}>
+                {children}
+              </ToolInputContext.Provider>
             </GlassPanel>
           )}
 
