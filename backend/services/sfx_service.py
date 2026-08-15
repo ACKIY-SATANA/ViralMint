@@ -19,6 +19,17 @@ logger = logging.getLogger(__name__)
 
 SFX_DIR = settings.STORAGE_ROOT / "sfx"
 
+# Hard ceiling on how many effects one mix can lay down. Shared with the
+# per-style caps below so the two can't drift: the mixer used to stop at 15
+# while "heavy" planned up to 25, so a heavy run silently dropped a third of
+# its effects and still reported the planned count back to the user.
+MAX_MIXED_SFX = 25
+
+# Per-style density caps and spacing. Named constants because the planner and
+# the mixer must agree on them.
+STYLE_MAX_SFX = {"minimal": 5, "moderate": 12, "heavy": 25}
+STYLE_MIN_INTERVAL_S = {"minimal": 10.0, "moderate": 5.0, "heavy": 3.0}
+
 
 class SFXType(str, Enum):
     WHOOSH = "whoosh"
@@ -107,8 +118,8 @@ async def auto_place_sfx(
             return []
 
     # Min interval between SFX to avoid overlap
-    min_interval = {"minimal": 10.0, "moderate": 5.0, "heavy": 3.0}.get(style, 5.0)
-    max_sfx = {"minimal": 5, "moderate": 12, "heavy": 25}.get(style, 12)
+    min_interval = STYLE_MIN_INTERVAL_S.get(style, 5.0)
+    max_sfx = min(STYLE_MAX_SFX.get(style, 12), MAX_MIXED_SFX)
 
     placements = []
     last_sfx_time = -min_interval  # allow first SFX immediately
@@ -201,9 +212,10 @@ async def mix_sfx_into_audio(
         output_path = audio_path.parent / f"{audio_path.stem}_sfx.mp3"
 
     def _mix():
-        # Build FFmpeg command with multiple SFX inputs
-        # Limit to 15 SFX per video to keep filter complexity manageable
-        placements = sfx_placements[:15]
+        # Build FFmpeg command with multiple SFX inputs. MAX_MIXED_SFX bounds
+        # the filtergraph; it matches the densest style's cap so "heavy" is
+        # honoured rather than quietly truncated.
+        placements = sfx_placements[:MAX_MIXED_SFX]
 
         inputs = ["-i", str(audio_path)]
         filter_parts = []
@@ -238,10 +250,22 @@ async def mix_sfx_into_audio(
         if not filter_parts:
             return audio_path
 
-        # Mix all SFX with the main audio
+        # Mix all SFX with the main audio.
+        # normalize=0 is LOAD-BEARING: amix defaults to normalize=1, which
+        # divides the output by the number of *currently-active* inputs. The
+        # SFX are short clips adelay'd across the timeline, so at the start ALL
+        # of them are still "active" (pre-roll silence, not yet at EOF) and the
+        # voice gets scaled by ~1/n_inputs; as each SFX hits EOF the divisor
+        # drops and the voice swells progressively LOUDER toward the end (a
+        # ~20 dB monotonic ramp with ~15 SFX). normalize=0 sums instead, so the
+        # voice stays at full level and the (already volume-trimmed) SFX overlay
+        # on top; alimiter then catches any summed peak so the sum can't clip.
         sfx_labels = "".join(f"[sfx{i}]" for i in range(len(filter_parts)))
         n_inputs = len(filter_parts) + 1
-        filter_complex = ";".join(filter_parts) + f";[0:a]{sfx_labels}amix=inputs={n_inputs}:duration=first:dropout_transition=2[out]"
+        filter_complex = ";".join(filter_parts) + (
+            f";[0:a]{sfx_labels}amix=inputs={n_inputs}:duration=first:"
+            f"dropout_transition=2:normalize=0[mixraw];[mixraw]alimiter=limit=0.95[out]"
+        )
 
         cmd = (
             ["ffmpeg", "-y"]

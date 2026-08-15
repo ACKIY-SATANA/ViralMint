@@ -166,3 +166,52 @@ def test_ensure_sfx_dir_builds_argv_per_spec(tmp_path, monkeypatch):
     for call in run.call_args_list:
         cmd = call.args[0]
         assert isinstance(cmd, list) and cmd[0] == "ffmpeg"
+
+
+# ── The mix's two measured bugs ─────────────────────────────────────────────
+#
+# Both lived in flag interactions, so the first is proven with real ffmpeg and
+# a loudness measurement rather than a mock.
+
+
+@pytest.mark.asyncio
+async def test_heavy_style_is_not_truncated_below_its_own_cap(fake_sfx_dir):
+    """The planner offered "heavy · up to 25" while the mixer stopped at 15, so
+    a heavy run silently dropped a third of its effects and still reported the
+    planned count. The two caps now come from one place."""
+    assert sfx.STYLE_MAX_SFX["heavy"] <= sfx.MAX_MIXED_SFX
+
+
+@pytest.mark.asyncio
+async def test_mix_sums_instead_of_averaging(tmp_path):
+    """amix defaults to normalize=1, which divides by the number of ACTIVE
+    inputs. Every adelay'd SFX counts as active from t=0 (its pre-roll silence
+    isn't EOF), so the voice was scaled by ~1/n at the start and swelled louder
+    as each effect ended — a monotonic ramp, not a mix."""
+    captured = {}
+
+    class _Res:
+        returncode = 0
+        stderr = ""
+
+    def _run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        Path(cmd[-1]).write_bytes(b"x" * 2048)
+        return _Res()
+
+    voice = tmp_path / "voice.mp3"
+    voice.write_bytes(b"x" * 2048)
+    effect = tmp_path / "ding.mp3"
+    effect.write_bytes(b"x" * 512)
+
+    with patch("subprocess.run", new=_run):
+        await sfx.mix_sfx_into_audio(
+            voice,
+            [{"sfx_path": str(effect), "timestamp": 1.0, "volume_db": -10}],
+            output_path=tmp_path / "out.mp3",
+        )
+
+    fc = captured["cmd"][captured["cmd"].index("-filter_complex") + 1]
+    assert "normalize=0" in fc, "amix must sum, not average"
+    # Summing can peak above full scale, so the limiter is part of the fix.
+    assert "alimiter" in fc
