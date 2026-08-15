@@ -16,13 +16,26 @@ class ViralMintWS {
   }
 
   connect() {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    // Guard BOTH open and still-CONNECTING sockets. connect() is called on
+    // every Layout mount — React StrictMode double-invokes that effect, and
+    // the second call used to land while the first socket was still
+    // CONNECTING, creating a SECOND WebSocket without closing the first.
+    // Both sockets then fed the same listener set, so every server event was
+    // handled twice: duplicate chat bubbles, doubled streaming text, and
+    // duplicate job cards.
+    if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
       return
     }
 
-    this.ws = new WebSocket(WS_URL)
+    // Capture the socket in a local: every handler below compares it against
+    // `this.ws` so a SUPERSEDED socket goes silent instead of racing the
+    // current one.
+    const socket = new WebSocket(WS_URL)
+    this.ws = socket
 
-    this.ws.onmessage = (e) => {
+    socket.onmessage = (e) => {
+      // A superseded socket must go silent even if it lingers half-open.
+      if (this.ws !== socket) return
       try {
         const msg = JSON.parse(e.data)
         const handlers = this.listeners[msg.type] || []
@@ -32,7 +45,11 @@ class ViralMintWS {
       }
     }
 
-    this.ws.onclose = () => {
+    socket.onclose = () => {
+      // Only the CURRENT socket drives connection state + reconnect; a stale
+      // socket closing must not trigger a parallel reconnect loop.
+      if (this.ws !== socket) return
+
       // Notify listeners of disconnection
       const handlers = this.listeners["_connection_state"] || []
       handlers.forEach(h => h({ connected: false }))
@@ -43,13 +60,18 @@ class ViralMintWS {
       }
     }
 
-    this.ws.onopen = () => {
+    socket.onopen = () => {
+      if (this.ws !== socket) {
+        // Superseded while connecting — close it so it can't double-deliver.
+        try { socket.close() } catch { /* already closing */ }
+        return
+      }
       this.reconnectDelay = 1000
 
       // Flush queued messages
       const pending = this._queue.splice(0)
       for (const msg of pending) {
-        this.ws.send(JSON.stringify(msg))
+        socket.send(JSON.stringify(msg))
       }
 
       // Notify listeners of connection
@@ -57,7 +79,8 @@ class ViralMintWS {
       handlers.forEach(h => h({ connected: true }))
     }
 
-    this.ws.onerror = (err) => {
+    socket.onerror = (err) => {
+      if (this.ws !== socket) return
       console.error("WS error:", err)
     }
   }
