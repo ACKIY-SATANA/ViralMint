@@ -496,11 +496,12 @@ async def voiceover_tool(
 
 @router.post("/transform")
 async def transform_tool(
-    operation: Literal["flip_h", "flip_v", "rotate_cw", "rotate_ccw", "rotate_180", "loop", "volume"] = Form(...),
+    operation: Literal["flip_h", "flip_v", "rotate_cw", "rotate_ccw", "rotate_180",
+                       "loop", "volume", "mute"] = Form(...),
     amount: str = Form(""),
     file: UploadFile = File(...),
 ):
-    """Quick local video transforms: flip / rotate / loop / volume."""
+    """Quick local video transforms: flip / rotate / loop / volume / mute."""
     from backend.agents.job_helper import create_job
     from backend.core.task_runner import dispatch
     from backend.core.tool_runners import run_tool_transform

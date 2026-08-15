@@ -29,6 +29,7 @@ import ContentCutOutlinedIcon from "@mui/icons-material/ContentCutOutlined"
 import ZoomInMapOutlinedIcon from "@mui/icons-material/ZoomInMapOutlined"
 import CompressOutlinedIcon from "@mui/icons-material/CompressOutlined"
 import CropOutlinedIcon from "@mui/icons-material/CropOutlined"
+import VolumeOffOutlinedIcon from "@mui/icons-material/VolumeOffOutlined"
 
 // ── Catalog ────────────────────────────────────────────────────────────────
 //
@@ -52,6 +53,16 @@ const TOOLS = [
     description: "Flip, rotate, loop, or change a clip's volume.",
     icon: <TransformIcon />,
     category: "video",
+  },
+  {
+    // One runner, one job type, one history — but its own card, because
+    // "remove audio" is what people search for, not "transform".
+    id: "remove-audio",
+    title: "Remove Audio",
+    description: "Strip the sound from a video and keep the picture untouched.",
+    icon: <VolumeOffOutlinedIcon />,
+    category: "audio",
+    route: "/tools/transform?op=mute",
   },
   {
     id: "compress",
@@ -313,7 +324,10 @@ function CategorySection({ category, tools, onPick }) {
 export default function Tools() {
   useDocumentTitle("Tools")
   const navigate = useNavigate()
-  const pick = (id) => navigate(`/tools/${id}`)
+  const pick = (id) => {
+    const tool = TOOLS.find((t) => t.id === id)
+    navigate(tool?.route || `/tools/${id}`)
+  }
 
   // Hub search — a flat ranked result grid when a query is present, else the
   // categorized layout (title/description/id all match against the query).

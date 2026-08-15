@@ -1163,7 +1163,7 @@ async def run_tool_voiceover(
 async def run_tool_transform(
     job_id: str, in_path: Path, operation: str, amount: str = "", user_id: str = "local",
 ):
-    """Quick local FFmpeg transforms: flip / rotate / loop / volume."""
+    """Quick local FFmpeg transforms: flip / rotate / loop / volume / mute."""
     from backend.api.tools import tool_out_path
 
     logger.info("TASK START tool:transform | job=%s op=%s", job_id[:8], operation)
@@ -1171,9 +1171,36 @@ async def run_tool_transform(
     try:
         out_path = tool_out_path(job_id, ".mp4")
 
+        # "Remove audio" on a video that never had any is a no-op that looks
+        # like a broken tool — you get a file back and nothing changed. Say so
+        # instead. Still produce the output: the user's goal (a video with no
+        # sound) is already true, so failing would be wrong.
+        if operation == "mute":
+            from backend.core.ws_manager import ws_manager
+            from backend.services.ffmpeg_service import has_audio_stream
+            if not await has_audio_stream(in_path):
+                await ws_manager.send_constraint_warning(
+                    constraint="mute_no_audio", severity="info",
+                    message=(
+                        "This video had no audio track to begin with — the "
+                        "result is the same video, unchanged."
+                    ),
+                    user_id=user_id,
+                )
+
         def _run():
             base = ["ffmpeg", "-y"]
-            if operation == "loop":
+            if operation == "mute":
+                # Strip every audio track outright. Measured against the
+                # `volume=0` it replaces in the UI (ffmpeg 7.1): volume=0
+                # leaves a SILENT AAC stream in the file — it re-encodes the
+                # audio to silence rather than removing it, so the bytes and
+                # the stream are both still there. `-an` drops it, and
+                # skipping the AAC pass makes this near-instant on a long
+                # clip. Video is stream-copied either way.
+                cmd = base + ["-i", str(in_path), "-c:v", "copy", "-an",
+                              "-movflags", "+faststart", str(out_path)]
+            elif operation == "loop":
                 try:
                     n = max(2, min(20, int(float(amount or "2"))))
                 except (ValueError, TypeError):

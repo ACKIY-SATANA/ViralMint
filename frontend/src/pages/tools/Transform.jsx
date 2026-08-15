@@ -1,8 +1,9 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import {
   Box, Typography, ToggleButtonGroup, ToggleButton, Stack, Slider,
 } from "@mui/material"
 import TransformIcon from "@mui/icons-material/Transform"
+import { useSearchParams } from "react-router-dom"
 import ToolRunner from "../../components/tools/ToolRunner"
 import useDocumentTitle from "../../hooks/useDocumentTitle"
 
@@ -14,9 +15,20 @@ const OPS = [
   { v: "rotate_180", label: "Rotate 180°" },
   { v: "loop", label: "Loop" },
   { v: "volume", label: "Volume" },
+  { v: "mute", label: "Remove audio" },
 ]
+
+// Ops that can be deep-linked with ?op=… — the Tools hub lists "Remove Audio"
+// as its own card because that's how people look for it, and it lands here
+// with the operation already picked. Whitelisted so a hand-typed param can't
+// set an operation the backend would reject.
+const DEEP_LINKABLE = new Set(OPS.map((o) => o.v))
+// "Mute" used to live here as volume=0, which is a subtly different thing:
+// measured on ffmpeg 7.1, it re-encodes the audio to silence and leaves that
+// SILENT AAC stream in the file. For "I don't want any sound on this" the
+// track should be gone, not quiet — that's the `mute` OPERATION, which drops
+// it with -an and skips the audio re-encode entirely.
 const VOL_PRESETS = [
-  { v: 0, label: "Mute" },
   { v: 0.5, label: "−50%" },
   { v: 1.5, label: "+50%" },
   { v: 2, label: "2×" },
@@ -27,13 +39,20 @@ export default function ToolTransform() {
   const [operation, setOperation] = useState("flip_h")
   const [loopCount, setLoopCount] = useState(2)
   const [volume, setVolume] = useState(2)
+  const [params] = useSearchParams()
+
+  // Deep link from the Tools hub's "Remove Audio" card.
+  const opParam = params.get("op")
+  useEffect(() => {
+    if (opParam && DEEP_LINKABLE.has(opParam)) setOperation(opParam)
+  }, [opParam])
 
   const amount = operation === "loop" ? String(loopCount) : operation === "volume" ? String(volume) : ""
 
   return (
     <ToolRunner
       title="Transform"
-      description="Quick edits — flip, rotate, loop, or change a clip's volume"
+      description="Quick edits — flip, rotate, loop, change volume, or strip the audio"
       icon={<TransformIcon fontSize="large" />}
       endpoint="/api/tools/transform"
       fieldBuilder={() => ({ operation, amount })}
