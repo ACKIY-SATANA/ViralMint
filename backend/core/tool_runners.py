@@ -747,14 +747,34 @@ def _resolve_merge_target(first_clip: Path, target_aspect: str) -> tuple[int, in
 
 def _crop_to_aspect_sync(src: Path, dst: Path, target_w: int, target_h: int):
     """Scale+center-crop a clip to exactly target_w x target_h and re-encode
-    to a uniform codec so the concat is clean."""
+    to a uniform codec so the concat is clean.
+
+    "Normalized" has to mean the stream LAYOUT too, not just codec and fps. A
+    SILENT source has no audio for `-c:a aac` to encode, so it normalized to
+    video-only — and the concat demuxer takes its layout from the FIRST file.
+    A silent intro card in front of a talking video therefore merged to a file
+    with NO audio stream at all: the user's audio silently discarded, job
+    "success". In the other order the audio track ended early. Giving every
+    clip a real (silent) track heals both, and the crossfade path with it.
+    """
+    from backend.services.ffmpeg_service import has_audio_stream_sync
+
     vf = (
         f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
         f"crop={target_w}:{target_h},setsar=1"
     )
-    cmd = [
-        "ffmpeg", "-y", "-i", str(src),
-        "-vf", vf,
+    src_has_audio = has_audio_stream_sync(src)
+
+    cmd = ["ffmpeg", "-y", "-i", str(src)]
+    if not src_has_audio:
+        # An INFINITE silence source — it must be bounded, or the encode
+        # never ends. `-shortest` bounds it to the video stream.
+        cmd += ["-f", "lavfi", "-i",
+                "anullsrc=channel_layout=stereo:sample_rate=44100"]
+    cmd += ["-vf", vf]
+    if not src_has_audio:
+        cmd += ["-map", "0:v:0", "-map", "1:a:0", "-shortest"]
+    cmd += [
         "-r", "30",
         "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",

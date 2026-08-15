@@ -979,6 +979,33 @@ def _format_srt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+def has_audio_stream_sync(media_path: Path) -> bool:
+    """Blocking core of `has_audio_stream`, for callers already on a thread.
+
+    One implementation, two entry points — a second ffprobe-for-audio helper
+    is exactly how two call sites end up disagreeing about what "has audio"
+    means on a probe failure.
+    """
+    media_path = Path(media_path)
+    if not media_path.exists():
+        return False
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet",
+             "-select_streams", "a",
+             "-show_entries", "stream=index",
+             "-of", "csv=p=0",
+             str(media_path)],
+            capture_output=True, text=True, timeout=15,
+        )
+        return bool(result.stdout.strip())
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        # On probe failure, default to "yes" so we don't block transcription
+        # for files that might still work — whisper's own error path is
+        # the safety net.
+        return True
+
+
 async def has_audio_stream(media_path: Path) -> bool:
     """Quick ffprobe check: does this file contain any audio stream?
 
@@ -987,25 +1014,4 @@ async def has_audio_stream(media_path: Path) -> bool:
     faster-whisper's own error in that case is an opaque "tuple index
     out of range" from deep inside its decoder.
     """
-    media_path = Path(media_path)
-    if not media_path.exists():
-        return False
-
-    def _probe() -> bool:
-        try:
-            result = subprocess.run(
-                ["ffprobe", "-v", "quiet",
-                 "-select_streams", "a",
-                 "-show_entries", "stream=index",
-                 "-of", "csv=p=0",
-                 str(media_path)],
-                capture_output=True, text=True, timeout=15,
-            )
-            return bool(result.stdout.strip())
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            # On probe failure, default to "yes" so we don't block transcription
-            # for files that might still work — whisper's own error path is
-            # the safety net.
-            return True
-
-    return await asyncio.to_thread(_probe)
+    return await asyncio.to_thread(has_audio_stream_sync, media_path)
