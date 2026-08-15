@@ -55,10 +55,12 @@ def downloader(monkeypatch, tmp_path):
     """Stub the yt-dlp layer; each test scripts per-URL outcomes."""
     outcomes: dict = {}
     calls: list[str] = []
+    seen_options: list = []
 
     async def fake_download(url, output_dir=None, filename=None,
-                            extract_audio=True):
+                            extract_audio=True, options=None):
         calls.append(url)
+        seen_options.append(options)
         out = outcomes.get(url, "ok")
         if isinstance(out, Exception):
             raise out
@@ -69,11 +71,13 @@ def downloader(monkeypatch, tmp_path):
         # a PosixPath. Returning a Path from this stub hides that mismatch.
         return {"video_path": str(vid), "audio_path": None, "duration": 120,
                 "file_size_mb": 1.0, "subtitles": None, "chapters": None,
-                "tags": None, "category": None, "title": "A video"}
+                "tags": None, "category": None, "title": "A video",
+                "height": 1080, "requested_quality": (options or {}).get("quality"),
+                "kept_subtitle_paths": [], "option_postprocessors_dropped": False}
 
     monkeypatch.setattr("backend.services.ytdlp_service.download_video",
                         fake_download)
-    return {"outcomes": outcomes, "calls": calls}
+    return {"outcomes": outcomes, "calls": calls, "options": seen_options}
 
 
 @pytest.fixture()
@@ -160,6 +164,73 @@ class TestBatchDownload:
                    {"url": "https://youtu.be/c"}])
         assert len(downloader["calls"]) == 3
 
+    def test_no_options_reaches_the_downloader_as_none(self, downloader,
+                                                       no_analyzer):
+        """The invariant that keeps every pre-existing caller byte-identical:
+        a batch that asked for nothing must not invent an options dict."""
+        self._run([{"url": "https://youtu.be/a"}])
+        assert downloader["options"] == [None]
+
+    def test_options_apply_to_every_url_in_the_batch(self, downloader,
+                                                     no_analyzer):
+        async def go():
+            jid = await _job()
+            await TR.run_batch_download_urls(
+                jid, [{"url": "https://youtu.be/a"}, {"url": "https://youtu.be/b"}],
+                user_id="local", options={"quality": "720p"})
+            return await _job_row(jid)
+        asyncio.run(go())
+        assert downloader["options"] == [{"quality": "720p"}] * 2
+
+    def test_the_job_persists_a_delivery_receipt_per_video(self, downloader,
+                                                           no_analyzer):
+        """What the user GOT vs what they asked for. Without this on the job
+        row there is nowhere honest for a UI to say "you asked for 4K, this
+        source only had 1080p" — the WS completion event carries no output."""
+        import json as _json
+
+        async def go():
+            jid = await _job()
+            await TR.run_batch_download_urls(
+                jid, [{"url": "https://youtu.be/a", "title": "A"}],
+                user_id="local", options={"quality": "2160p"})
+            return await _job_row(jid)
+        row = asyncio.run(go())
+        out = _json.loads(row.output_json)
+        assert len(out["videos"]) == 1
+        got = out["videos"][0]
+        assert got["requested_quality"] == "2160p" and got["height"] == 1080
+        assert got["ext"] == "mp4" and got["id"] in out["downloaded_ids"]
+
+    def test_analyze_false_skips_the_analyzer(self, downloader, monkeypatch):
+        """The tool page asked for files, not transcripts — Whisper over every
+        download would be minutes nobody requested."""
+        ran = []
+
+        async def spy(self, *a, **k):
+            ran.append(True)
+        monkeypatch.setattr("backend.agents.analyzer.AnalyzerAgent.run", spy)
+
+        async def go():
+            jid = await _job()
+            await TR.run_batch_download_urls(
+                jid, [{"url": "https://youtu.be/a"}], user_id="local",
+                analyze=False)
+            return await _job_row(jid)
+        row = asyncio.run(go())
+        assert row.status == "success"
+        assert ran == [], "analysis must not run when it wasn't asked for"
+
+    def test_analyze_defaults_to_on_for_existing_callers(self, downloader,
+                                                         monkeypatch):
+        ran = []
+
+        async def spy(self, *a, **k):
+            ran.append(True)
+        monkeypatch.setattr("backend.agents.analyzer.AnalyzerAgent.run", spy)
+        self._run([{"url": "https://youtu.be/a"}])
+        assert ran == [True]
+
 
 class TestSingleDownloadToDb:
     def test_it_persists_a_downloaded_row(self, downloader, no_analyzer):
@@ -170,7 +241,7 @@ class TestSingleDownloadToDb:
             from backend.models.downloaded_video import DownloadedVideo
             async with AsyncSessionLocal() as db:
                 return (await db.execute(select(DownloadedVideo).where(
-                    DownloadedVideo.id == vid))).scalar_one()
+                    DownloadedVideo.id == vid["id"]))).scalar_one()
         row = asyncio.run(go())
         assert row.video_path and row.duration_seconds == 120
 
@@ -182,7 +253,7 @@ class TestSingleDownloadToDb:
             from backend.models.downloaded_video import DownloadedVideo
             async with AsyncSessionLocal() as db:
                 return (await db.execute(select(DownloadedVideo).where(
-                    DownloadedVideo.id == vid))).scalar_one()
+                    DownloadedVideo.id == vid["id"]))).scalar_one()
         assert asyncio.run(go()).platform == "tiktok"
 
     def test_a_download_failure_propagates_to_the_caller(

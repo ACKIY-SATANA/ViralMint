@@ -212,6 +212,19 @@ async def delete_downloaded(video_id: str):
                 if p.exists():
                     p.unlink()
 
+        # Sidecar subtitles kept by the `subtitles: "file"` download option
+        # live next to the video (`<stem>.<lang>.srt/.vtt`) with no DB column
+        # of their own — sweep them with the row or they orphan forever: a
+        # delete must cover every file the row owns.
+        if video.video_path:
+            vp = Path(video.video_path)
+            for ext in ("srt", "vtt"):
+                for f in vp.parent.glob(f"{vp.stem}.*.{ext}"):
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+
         # Delete associated scout result
         if video.scout_result_id:
             sr_result = await db.execute(
@@ -256,6 +269,16 @@ async def cleanup_stale():
                     p = Path(v.audio_path)
                     if p.exists():
                         p.unlink()
+                # And any sidecar subtitles the missing video left behind
+                # (`subtitles: "file"` download option — no DB column).
+                if v.video_path:
+                    vp = Path(v.video_path)
+                    for ext in ("srt", "vtt"):
+                        for f in vp.parent.glob(f"{vp.stem}.*.{ext}"):
+                            try:
+                                f.unlink()
+                            except OSError:
+                                pass
                 # Remove scout result
                 if v.scout_result_id:
                     sr_result = await db.execute(
@@ -277,8 +300,18 @@ async def cleanup_stale():
 async def batch_download_from_urls(body: dict = None):
     """
     Batch download videos from a list of URLs (e.g. from channel analysis).
-    Body: { "urls": [{"url": "...", "title": "..."}, ...] }
-    Returns: { "job_id": "uuid", "count": N }
+    Body: { "urls": [{"url": "...", "title": "..."}, ...],
+            "options": {...}, "analyze": true }
+    Returns: { "job_id": "uuid", "count": N, "options": {...} }
+
+    `options` (all optional — see backend/services/download_options.py) apply
+    to every URL in the batch: quality / subtitles / sub_langs / container /
+    thumbnail / metadata. Omitted or unrecognized values are dropped and the
+    download takes the default path, so an older client or a confused LLM can
+    never break a download by sending a bad option.
+
+    `analyze` (default true) runs Whisper + insight extraction afterwards.
+    Pass false when the caller just wants the files on disk.
     """
     body = body or {}
     urls = body.get("urls", [])
@@ -308,19 +341,43 @@ async def batch_download_from_urls(body: dict = None):
     if not urls:
         raise HTTPException(status_code=400, detail="No usable URLs provided")
 
+    # URL trust boundary. This endpoint is reachable by the chat planner (i.e.
+    # by LLM-relayed values) as well as by our own UI, and every entry here is
+    # handed to yt-dlp — which happily accepts `file:///etc/passwd`. Guard at
+    # the endpoint so the check can't be bypassed by a different caller.
+    for u in urls:
+        link = (u.get("url") or "").strip()
+        if not link.lower().startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=400,
+                detail="Every url must be a full http(s) link",
+            )
+
+    from backend.services.download_options import normalize as _normalize_opts
+    options = _normalize_opts(body.get("options"))
+    analyze = body.get("analyze", True) is not False
+
     from backend.agents.job_helper import create_job
     from backend.core.task_runner import run_batch_download_urls, dispatch
 
     job = await create_job("download", "local", {
         "batch_urls": [u.get("url", "") for u in urls],
         "count": len(urls),
+        # Persisted so a UI re-attaching to a running job can still show what
+        # was requested, and so a bug report can tell "asked for 4K" from
+        # "got 4K".
+        "options": options,
     })
     dispatch(run_batch_download_urls(
         job_id=job.id,
         urls=urls,
         user_id="local",
+        options=options or None,
+        analyze=analyze,
     ))
-    return {"job_id": job.id, "count": len(urls)}
+    # Echo the NORMALIZED options, not the raw body — the caller sees exactly
+    # what will be applied rather than what it hoped for.
+    return {"job_id": job.id, "count": len(urls), "options": options}
 
 
 @router.post("/downloaded/import")

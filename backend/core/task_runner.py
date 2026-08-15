@@ -96,9 +96,21 @@ async def run_generate(
         await update_job_status(job_id, "failed", error_message=str(e))
 
 
-async def run_batch_download_urls(job_id: str, urls: list[dict], user_id: str = "local"):
+async def run_batch_download_urls(job_id: str, urls: list[dict], user_id: str = "local",
+                                  options: dict | None = None, analyze: bool = True):
     """Download multiple videos from a list of URLs, then analyze all.
-    urls: [{"url": "...", "title": "..."}, ...]"""
+    urls: [{"url": "...", "title": "..."}, ...]
+
+    `options`: shared per-download yt-dlp options (see
+    backend/services/download_options.py) applied to EVERY url in the batch.
+    None → the pre-existing default path for every caller that predates it.
+
+    `analyze`: run Whisper + insight extraction over everything downloaded.
+    True for every pre-existing caller (channel analysis and the chat planner
+    both want the transcripts). The Video Download tool page passes False: it
+    was asked for the files, and transcribing a 40-minute video the user only
+    wanted on disk is minutes of work nobody asked for — Library can analyze
+    on demand."""
     logger.info("TASK START batch_download | job=%s count=%d", job_id[:8], len(urls))
     from backend.agents.job_helper import update_job_status
     from backend.core.ws_manager import ws_manager
@@ -109,6 +121,11 @@ async def run_batch_download_urls(job_id: str, urls: list[dict], user_id: str = 
     try:
         total = len(urls)
         downloaded_ids = []
+        # Per-video delivery summaries ({id, title, height, requested_quality,
+        # ext, subtitle_files, extras_dropped}) — persisted in the job's
+        # output_data so the Video Download page can report what was DELIVERED
+        # vs what the options asked for.
+        video_summaries = []
         errors = []
         rate_limited = False
 
@@ -132,9 +149,11 @@ async def run_batch_download_urls(job_id: str, urls: list[dict], user_id: str = 
                 await asyncio.sleep(jittered_delay())
 
             try:
-                dv_id = await _download_single_video_to_db(job_id, video_url, video_title, user_id)
-                if dv_id:
-                    downloaded_ids.append(dv_id)
+                dl = await _download_single_video_to_db(
+                    job_id, video_url, video_title, user_id, options=options)
+                if dl:
+                    downloaded_ids.append(dl["id"])
+                    video_summaries.append(dl)
             except RateLimitError as e:
                 rate_limited = True
                 errors.append(f"Video {i + 1}/{total} '{video_title[:40]}': {e}")
@@ -161,18 +180,28 @@ async def run_batch_download_urls(job_id: str, urls: list[dict], user_id: str = 
             )
             raise Exception(user_msg)
 
-        # Analyze all downloaded videos
-        await ws_manager.send_progress(job_id, 75, f"Analyzing {len(downloaded_ids)} videos...", user_id)
-        await update_job_status(job_id, "running", progress_pct=75, current_step=f"Analyzing {len(downloaded_ids)} videos...")
+        if analyze:
+            # Analyze all downloaded videos
+            await ws_manager.send_progress(job_id, 75, f"Analyzing {len(downloaded_ids)} videos...", user_id)
+            await update_job_status(job_id, "running", progress_pct=75, current_step=f"Analyzing {len(downloaded_ids)} videos...")
 
-        from backend.agents.analyzer import AnalyzerAgent
-        await AnalyzerAgent().run(job_id=job_id, user_id=user_id)
+            from backend.agents.analyzer import AnalyzerAgent
+            await AnalyzerAgent().run(job_id=job_id, user_id=user_id)
 
         await update_job_status(
             job_id, "success",
             progress_pct=100,
-            current_step=f"Downloaded and analyzed {len(downloaded_ids)}/{total} videos",
-            output_data={"downloaded_ids": downloaded_ids, "total": total},
+            current_step=(
+                f"Downloaded and analyzed {len(downloaded_ids)}/{total} videos"
+                if analyze else
+                f"Downloaded {len(downloaded_ids)}/{total} videos — open Library to analyze"
+            ),
+            # `videos` carries what each download DELIVERED (height/ext/
+            # subtitle sidecars) so the Video Download page can show "asked for
+            # 4K, this source had 1080p" instead of implying every option was
+            # honoured.
+            output_data={"downloaded_ids": downloaded_ids, "total": total,
+                         "videos": video_summaries},
             error_message=error_summary if errors else None,
         )
         await ws_manager.send({
@@ -257,9 +286,9 @@ async def _download_channel(job_id: str, url: str, user_id: str, max_videos: int
             await asyncio.sleep(jittered_delay())
 
         try:
-            dv_id = await _download_single_video_to_db(job_id, video_url, video_title, user_id)
-            if dv_id:
-                downloaded_ids.append(dv_id)
+            dl = await _download_single_video_to_db(job_id, video_url, video_title, user_id)
+            if dl:
+                downloaded_ids.append(dl["id"])
         except RateLimitError as e:
             rate_limited = True
             logger.warning(f"Rate limited on channel video {i + 1}/{total}, skipping remaining: {e}")
@@ -307,7 +336,7 @@ async def _download_single_url(job_id: str, url: str, title: str, user_id: str):
 
     await ws_manager.send_progress(job_id, 10, "Downloading video...", user_id)
 
-    dv_id = await _download_single_video_to_db(job_id, url, title, user_id)
+    dv_id = (await _download_single_video_to_db(job_id, url, title, user_id))["id"]
 
     await ws_manager.send_progress(job_id, 70, "Analyzing video...", user_id)
 
@@ -327,8 +356,26 @@ async def _download_single_url(job_id: str, url: str, title: str, user_id: str):
     }, user_id)
 
 
-async def _download_single_video_to_db(job_id: str, url: str, title: str, user_id: str) -> str:
-    """Download one video, create DB records. Returns DownloadedVideo.id."""
+async def _download_single_video_to_db(job_id: str, url: str, title: str, user_id: str,
+                                       options: dict | None = None) -> dict:
+    """Download one video, create DB records.
+
+    Returns a delivery summary:
+        {"id": DownloadedVideo.id, "title": str,
+         "height": int|None, "requested_quality": str|None, "ext": str|None,
+         "subtitle_files": [str], "extras_dropped": bool}
+
+    `id` is what chaining callers need; the rest is what the user actually GOT
+    vs what the per-download `options` asked for (a quality cap degrades to
+    the closest available height, and a container request degrades to mkv when
+    codecs demand it; `ext` always comes from the file actually written).
+    Callers that surface results to a human or an LLM should pass the summary
+    through so "asked for 4K" is never silently presented as "got 4K".
+
+    `options`: see backend/services/download_options.py. None → the
+    pre-existing default path, byte-identical for every caller that predates
+    this parameter.
+    """
     from backend.models.downloaded_video import DownloadedVideo
     from backend.models.scout_result import ScoutResult
     from backend.services.ytdlp_service import download_video
@@ -337,6 +384,7 @@ async def _download_single_video_to_db(job_id: str, url: str, title: str, user_i
     from backend.agents.scout import compute_virality_score
     from uuid import uuid4
     from datetime import datetime
+    from pathlib import Path
 
     video_id = str(uuid4())[:12]
 
@@ -346,6 +394,8 @@ async def _download_single_video_to_db(job_id: str, url: str, title: str, user_i
             output_dir=settings.VIDEOS_DIR,
             filename=video_id,
             extract_audio=True,
+            # None for every pre-existing caller → byte-identical download.
+            options=options,
         )
     except Exception as first_error:
         # AI-assisted retry: ask AI to fix the URL and try once more
@@ -369,6 +419,7 @@ async def _download_single_video_to_db(job_id: str, url: str, title: str, user_i
             output_dir=settings.VIDEOS_DIR,
             filename=video_id,
             extract_audio=True,
+            options=options,
         )
         # If this also fails, the exception propagates naturally
         url = corrected_url  # Use corrected URL for DB records
@@ -452,7 +503,18 @@ async def _download_single_video_to_db(job_id: str, url: str, title: str, user_i
         db.add(dv)
         await db.commit()
         await db.refresh(dv)
-        return dv.id
+        return {
+            "id": dv.id,
+            "title": dv.title,
+            "height": dl_result.get("height"),
+            "requested_quality": dl_result.get("requested_quality"),
+            "ext": (Path(dl_result["video_path"]).suffix.lstrip(".").lower() or None)
+                   if dl_result.get("video_path") else None,
+            # Basenames, not full paths — enough for the UI to name the sidecar
+            # ("test_vid.en.srt") without spilling filesystem layout into cards.
+            "subtitle_files": [Path(p).name for p in dl_result.get("kept_subtitle_paths") or []],
+            "extras_dropped": bool(dl_result.get("option_postprocessors_dropped")),
+        }
 
 
 async def run_analyze_imported(job_id: str, downloaded_video_id: str, user_id: str = "local"):

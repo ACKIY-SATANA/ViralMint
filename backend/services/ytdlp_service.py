@@ -592,18 +592,44 @@ async def download_video(
     output_dir: Path = None,
     filename: str = None,
     extract_audio: bool = True,
+    options: dict | None = None,
 ) -> dict:
     """
     Download a video using yt-dlp.
     Returns: {"video_path": Path, "audio_path": Path|None, "duration": int, "file_size_mb": float,
-              "subtitles": list|None, "chapters": list|None, "tags": list|None, "category": str|None}
+              "subtitles": list|None, "chapters": list|None, "tags": list|None, "category": str|None,
+              "height": int|None, "requested_quality": str|None, "kept_subtitle_paths": list,
+              "option_postprocessors_dropped": bool}
     Raises: RateLimitError, VideoUnavailableError, DownloadError
+
+    `options`: per-download yt-dlp options from
+    `backend.services.download_options` (quality / subtitles / container /
+    thumbnail / metadata). **None or {} means the pre-existing default path,
+    byte-identical to before this parameter existed** — the module-level
+    FORMAT_FALLBACK_CHAIN, the standard sidecar-subtitle sweep, no
+    postprocessors. Options are strictly additive; see that module for why a
+    quality cap degrades instead of failing.
+
+    `height` in the return is the resolution actually delivered, which is NOT
+    always the one requested (a cap falls through to the uncapped rungs rather
+    than erroring). Surfacing it is what lets a UI say "you asked for 4K, this
+    source only had 1080p" instead of implying the cap was honoured.
     """
     if output_dir is None:
         output_dir = settings.VIDEOS_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
     file_stem = filename or ""
+
+    # Per-download options. Normalized ONCE here so every branch below (base
+    # opts, the format ladder, the subtitle sweep) reads the same cleaned
+    # dict, and so a malformed dict from an LLM degrades to {} = default path
+    # rather than raising mid-download.
+    from backend.services import download_options as _dlopts
+    _opts = _dlopts.normalize(options)
+    _opt_overrides = _dlopts.ydl_overrides(_opts)
+    _opt_postprocessors = _opt_overrides.pop("_vm_postprocessors", [])
+    _format_chain = _dlopts.format_chain(_opts) or FORMAT_FALLBACK_CHAIN
 
     # Wait out any active rate-limit cooldown before starting
     cooldown = _check_cooldown()
@@ -644,6 +670,19 @@ async def download_video(
         # Use cached browser cookies (avoids repeated Keychain prompts on macOS)
         _apply_cookies(base_opts)
 
+        # Per-download options LAST so an explicit request wins over the
+        # standard layer (e.g. narrowing subtitleslangs from the 10-language
+        # transcript sweep to the one language the user asked to embed).
+        # Postprocessors are APPENDED, never assigned — so a future caller
+        # that installs its own on this dict keeps them.
+        if _opt_overrides:
+            base_opts.update(_opt_overrides)
+        if _opt_postprocessors:
+            base_opts["postprocessors"] = [
+                *(base_opts.get("postprocessors") or []),
+                *_opt_postprocessors,
+            ]
+
         def _attempt_download(opts):
             """Single download attempt — raises on failure."""
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -667,8 +706,17 @@ async def download_video(
 
         # ── Main download with multi-layer retry ────────────────────────────
         last_error = None
+        # Whether the per-download optional postprocessors (embed thumbnail /
+        # subtitles / metadata from `options`) were dropped after a
+        # postprocessing failure. Lives OUTSIDE the format loop: once an extra
+        # proved un-embeddable for this source, re-attaching it on the next
+        # format rung would just fail the same way.
+        opt_pps_dropped = False
 
-        for fmt_idx, fmt in enumerate(FORMAT_FALLBACK_CHAIN):
+        # `_format_chain` is FORMAT_FALLBACK_CHAIN unless the caller asked for
+        # a specific quality — see download_options.format_chain() on why an
+        # unrequested download must keep the module-level chain verbatim.
+        for fmt_idx, fmt in enumerate(_format_chain):
             video_opts = {**base_opts, "format": fmt}
 
             # Up to 2 attempts per format (original + 1 retry for transient errors)
@@ -757,6 +805,37 @@ async def download_video(
                         _cleanup_partial_files(output_dir, file_stem)
                         break  # Break retry loop, try next format
 
+                    # ── Optional-postprocessor failure: drop extras, keep video ──
+                    # Postprocessor errors fire AFTER the video is fully on
+                    # disk — failing the download over cover art would break
+                    # the options contract (degrade, never fail; see
+                    # download_options). Known offender: EmbedThumbnail
+                    # hard-raises on webm (single-stream downloads dodge the
+                    # merge_output_format steer). Drop OUR appended
+                    # postprocessors and retry the same format — yt-dlp sees
+                    # the finished file and skips straight to postprocessing,
+                    # so the retry costs no bandwidth. Runs AFTER the
+                    # format/merge predicate on purpose: yt-dlp's merger is
+                    # also a postprocessor, and a merge failure must keep its
+                    # walk down the format chain.
+                    if (_opt_postprocessors and not opt_pps_dropped
+                            and "postprocessing" in error_str):
+                        opt_pps_dropped = True
+                        remaining = [pp for pp in (base_opts.get("postprocessors") or [])
+                                     if pp not in _opt_postprocessors]
+                        # base_opts too: video_opts is rebuilt from it on the
+                        # next format rung, which would resurrect the extras.
+                        base_opts["postprocessors"] = remaining
+                        video_opts["postprocessors"] = remaining
+                        # Sweep the failed postprocessor's `<stem>.temp.*`
+                        # leftovers; the patterns never match the finished
+                        # video, which the retry deliberately reuses.
+                        _cleanup_partial_files(output_dir, file_stem)
+                        logger.warning(
+                            "Optional postprocessor failed, retrying without embed extras: %s", e
+                        )
+                        continue  # Retry same format without the extras
+
                     # ── Unknown error on first attempt: retry once ────
                     if attempt == 0:
                         logger.warning(f"Download error (attempt 1), retrying in 5s: {e}")
@@ -788,8 +867,20 @@ async def download_video(
         # Extract subtitles from downloaded files
         subtitles = _collect_subtitles(output_dir, file_stem_resolved)
 
-        # Clean up subtitle files after parsing (they're stored in DB now)
-        _cleanup_subtitle_files(output_dir, file_stem_resolved)
+        # Clean up subtitle files after parsing (they're stored in DB now).
+        #
+        # EXCEPT when the caller asked for `subtitles: "file"` — then the
+        # sidecar .srt IS the deliverable and sweeping it away would make the
+        # option a silent no-op. "embed" still sweeps: the track is inside the
+        # container by then, so leaving loose files would be litter.
+        kept_subtitle_paths: list[str] = []
+        if _opts.get("subtitles") == "file":
+            for _ext in ("srt", "vtt"):
+                kept_subtitle_paths.extend(
+                    str(p) for p in output_dir.glob(f"{file_stem_resolved}.*.{_ext}")
+                )
+        else:
+            _cleanup_subtitle_files(output_dir, file_stem_resolved)
 
         # Extract chapters from metadata
         chapters = _extract_chapters(info)
@@ -847,6 +938,18 @@ async def download_video(
             "chapters": chapters,
             "tags": tags,
             "category": category,
+            # What the user actually GOT vs what they asked for. A quality cap
+            # degrades to the uncapped rungs rather than failing, so these two
+            # can legitimately disagree — the UI reports the difference instead
+            # of implying the request was honoured.
+            "height": info.get("height"),
+            "requested_quality": _opts.get("quality"),
+            "kept_subtitle_paths": kept_subtitle_paths,
+            # True when a postprocessing failure forced the embed extras
+            # (thumbnail / subtitles / metadata) to be dropped so the video
+            # itself could be kept — surfaced so the caller can report the
+            # degradation instead of implying the extras were applied.
+            "option_postprocessors_dropped": opt_pps_dropped,
         }
 
     try:

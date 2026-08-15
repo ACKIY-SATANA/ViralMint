@@ -349,6 +349,73 @@ class TestOtherPosts:
                         json={"urls": ["", "   "]})
         assert r.status_code == 400
 
+    @pytest.mark.parametrize("bad", [
+        "file:///etc/passwd", "ftp://host/x.mp4", "/etc/passwd",
+        "javascript:alert(1)",
+    ])
+    def test_batch_download_refuses_a_non_http_url(self, client, bad):
+        """Every entry here is handed to yt-dlp, which happily reads
+        `file://`. The caller can be the chat planner relaying an LLM's text,
+        so the endpoint itself is the trust boundary — a guard at one caller
+        is bypassed by the next."""
+        r = client.post("/api/downloaded/batch-download", json={"urls": [bad]})
+        assert r.status_code == 400
+        assert "http" in r.json()["detail"].lower()
+
+    def test_batch_download_echoes_the_options_it_will_apply(self, client):
+        """Normalized, not as-sent: the caller must see what will actually
+        happen rather than what it hoped for."""
+        r = client.post("/api/downloaded/batch-download", json={
+            "urls": ["https://youtu.be/abc"],
+            "options": {"quality": "4k", "container": "mkv",
+                        "subtitles": "off", "nonsense": True},
+        })
+        assert r.status_code == 200, r.text
+        assert r.json()["options"] == {"quality": "2160p", "container": "mkv"}
+
+    def test_batch_download_with_no_options_echoes_nothing(self, client):
+        r = client.post("/api/downloaded/batch-download",
+                        json={"urls": ["https://youtu.be/abc"]})
+        assert r.json()["options"] == {}
+
+    def test_batch_download_survives_entirely_invalid_options(self, client):
+        """A bad option must never be the reason a download doesn't happen."""
+        r = client.post("/api/downloaded/batch-download", json={
+            "urls": ["https://youtu.be/abc"], "options": {"quality": "8k"}})
+        assert r.status_code == 200
+        assert r.json()["options"] == {}
+
+    def test_delete_sweeps_the_subtitle_sidecars_it_owns(self, client, tmp_path):
+        """`subtitles: "file"` leaves `<stem>.<lang>.srt` next to the video
+        with no DB column of its own. A delete that misses them orphans files
+        forever — a row's delete must cover every file the row owns."""
+        vid = tmp_path / "sweep_me.mp4"
+        vid.write_bytes(b"\x00" * 4096)
+        srt = tmp_path / "sweep_me.en.srt"
+        srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+        vtt = tmp_path / "sweep_me.es.vtt"
+        vtt.write_text("WEBVTT\n")
+        # A file with the same stem that is NOT ours must survive.
+        keeper = tmp_path / "sweep_me_other.en.srt"
+        keeper.write_text("x")
+
+        async def seed():
+            from backend.database import AsyncSessionLocal
+            from backend.models.downloaded_video import DownloadedVideo
+            async with AsyncSessionLocal() as db:
+                v = DownloadedVideo(user_id="local", title="Sidecars",
+                                    platform="youtube", video_path=str(vid),
+                                    duration_seconds=10)
+                db.add(v)
+                await db.commit()
+                return v.id
+        vid_id = asyncio.run(seed())
+
+        assert client.delete(f"/api/downloaded/{vid_id}").status_code == 200
+        assert not vid.exists()
+        assert not srt.exists() and not vtt.exists()
+        assert keeper.exists(), "only the row's own sidecars may be swept"
+
     def test_generate_script_needs_a_real_video(self, client):
         assert client.post(
             "/api/downloaded/nope/generate-script", json={}).status_code == 404

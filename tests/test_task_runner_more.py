@@ -291,6 +291,13 @@ class TestRunAnalyzeImported:
 
 # ── run_batch_download_urls ─────────────────────────────────────────────────
 
+# `_download_single_video_to_db` returns a DELIVERY SUMMARY, not a bare id —
+# a stub returning the old str made the runner treat every download as a
+# failure while the test still read as green.
+_DL_SUMMARY = {"id": "dv1", "title": "t1", "height": 1080,
+               "requested_quality": None, "ext": "mp4",
+               "subtitle_files": [], "extras_dropped": False}
+
 class TestRunBatchDownloadUrls:
     async def test_all_downloads_fail_routes_to_failed(self, job_status_spy, ws_spy):
         with patch.object(tr, "_download_single_video_to_db",
@@ -303,7 +310,7 @@ class TestRunBatchDownloadUrls:
     async def test_success_analyzes_and_completes(self, job_status_spy, ws_spy):
         an = MagicMock(); an.run = AsyncMock()
         with patch.object(tr, "_download_single_video_to_db",
-                          new=AsyncMock(return_value="dv1")), \
+                          new=AsyncMock(return_value=_DL_SUMMARY)), \
              patch("backend.agents.analyzer.AnalyzerAgent", return_value=an):
             await tr.run_batch_download_urls(
                 "job1", [{"url": "u1", "title": "t1"}])
@@ -312,7 +319,7 @@ class TestRunBatchDownloadUrls:
         assert "job_complete" in [c.args[0].get("type") for c in ws_spy.send.call_args_list]
 
     async def test_skips_items_with_no_url(self, job_status_spy, ws_spy):
-        dl = AsyncMock(return_value="dv1")
+        dl = AsyncMock(return_value=_DL_SUMMARY)
         an = MagicMock(); an.run = AsyncMock()
         with patch.object(tr, "_download_single_video_to_db", new=dl), \
              patch("backend.agents.analyzer.AnalyzerAgent", return_value=an), \

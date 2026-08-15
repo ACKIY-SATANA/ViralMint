@@ -317,3 +317,136 @@ class TestDownloadCascade:
         _install_yt_dlp(monkeypatch, [None], dl_env)
         self._download(dl_env)
         assert slept["secs"] == 4.0
+
+
+# ── per-download options ────────────────────────────────────────────────────
+
+class TestPerDownloadOptions:
+    """Options are strictly opt-in and can only ever degrade.
+
+    The whole design rests on two invariants that are easy to break by
+    accident: passing nothing must reach yt-dlp exactly as it did before the
+    parameter existed, and asking for something the source can't provide must
+    yield a lesser file rather than an error.
+    """
+
+    def _download(self, out_dir, **kw):
+        return asyncio.run(YT.download_video(
+            "https://youtu.be/testid", output_dir=out_dir,
+            extract_audio=False, **kw))
+
+    def test_no_options_walks_the_module_chain_untouched(self, dl_env, monkeypatch):
+        calls = _install_yt_dlp(
+            monkeypatch, [_DownloadError("requested format not available")] * 2 + [None],
+            dl_env)
+        out = self._download(dl_env)
+        assert [c["format"] for c in calls] == YT.FORMAT_FALLBACK_CHAIN[:3]
+        assert out["requested_quality"] is None
+        assert out["option_postprocessors_dropped"] is False
+
+    def test_a_quality_request_swaps_in_its_own_ladder(self, dl_env, monkeypatch):
+        from backend.services import download_options as dlo
+        calls = _install_yt_dlp(monkeypatch, [None], dl_env)
+        out = self._download(dl_env, options={"quality": "480p"})
+        assert calls[0]["format"] == dlo.QUALITY_LADDERS["480p"][0]
+        assert out["requested_quality"] == "480p"
+
+    def test_a_cap_the_source_cannot_meet_falls_through_to_uncapped(
+            self, dl_env, monkeypatch):
+        """The safety property, end to end: every capped rung failing must
+        still produce a video off the unconstrained tail, not an error."""
+        calls = _install_yt_dlp(
+            monkeypatch, [_DownloadError("requested format not available")] * 2 + [None],
+            dl_env)
+        out = self._download(dl_env, options={"quality": "2160p"})
+        assert Path(out["video_path"]).exists()
+        assert "height<=" not in calls[-1]["format"], (
+            "the last rung tried must be unconstrained")
+
+    def test_option_overrides_reach_yt_dlp(self, dl_env, monkeypatch):
+        calls = _install_yt_dlp(monkeypatch, [None], dl_env)
+        self._download(dl_env, options={"subtitles": "file", "sub_langs": ["es"],
+                                        "container": "mkv"})
+        opts = calls[0]["opts"]
+        assert opts["subtitleslangs"] == ["es"]
+        assert opts["merge_output_format"] == "mkv"
+
+    def test_garbage_options_degrade_to_the_default_path(self, dl_env, monkeypatch):
+        """An LLM inventing an option must not fail the download."""
+        calls = _install_yt_dlp(monkeypatch, [None], dl_env)
+        out = self._download(dl_env, options={"quality": "8k", "sponsorblock": "all"})
+        assert calls[0]["format"] == YT.FORMAT_FALLBACK_CHAIN[0]
+        assert out["requested_quality"] is None
+
+    def test_subtitles_file_mode_keeps_the_sidecar(self, dl_env, monkeypatch):
+        _install_yt_dlp(monkeypatch, [None], dl_env)
+        sidecar = dl_env / "testid.en.srt"
+        sidecar.write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+        out = self._download(dl_env, options={"subtitles": "file"})
+        assert sidecar.exists(), "the sidecar IS the deliverable in file mode"
+        assert str(sidecar) in out["kept_subtitle_paths"]
+
+    def test_subtitles_are_still_swept_when_not_requested(self, dl_env, monkeypatch):
+        _install_yt_dlp(monkeypatch, [None], dl_env)
+        sidecar = dl_env / "testid.en.srt"
+        sidecar.write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+        out = self._download(dl_env)
+        assert not sidecar.exists(), "loose subtitle files are litter by default"
+        assert out["kept_subtitle_paths"] == []
+
+
+class TestOptionalPostprocessorDrop:
+    """A postprocessing failure from the embed extras (thumbnail / subtitles /
+    metadata options) fires AFTER the video is fully downloaded — it must drop
+    the extras and keep the video, never fail the download. Real-world
+    trigger: EmbedThumbnail hard-raises on a single-stream webm, which the
+    merge_output_format steer can't prevent (no merge happens)."""
+
+    _PP_ERR = ("ERROR: Postprocessing: Supported filetypes for thumbnail "
+               "embedding are: mp3, mkv/mka, ogg/opus/flac, m4a/mp4/m4v/mov")
+
+    def _download(self, out_dir, **kw):
+        return asyncio.run(YT.download_video(
+            "https://youtu.be/testid", output_dir=out_dir,
+            extract_audio=False, **kw))
+
+    def test_pp_failure_drops_extras_and_keeps_the_video(
+            self, dl_env, monkeypatch, caplog):
+        calls = _install_yt_dlp(monkeypatch, [_DownloadError(self._PP_ERR)], dl_env)
+        with caplog.at_level("WARNING"):
+            out = self._download(dl_env, options={"thumbnail": True})
+
+        assert Path(out["video_path"]).exists()
+        # The degradation is REPORTED, not silent — callers pass this on so
+        # "embed the cover art" is never claimed over a plain file.
+        assert out["option_postprocessors_dropped"] is True
+        assert calls[0]["format"] == calls[1]["format"], "same format, no re-download"
+        assert not calls[1]["opts"].get("postprocessors"), (
+            "our postprocessors must be gone on the retry")
+
+    def test_pp_drop_fires_once_then_normal_classification(
+            self, dl_env, monkeypatch, caplog):
+        # If the source keeps failing after the extras are gone, the error is
+        # NOT ours — it must flow to the normal retry/format cascade instead
+        # of looping on the drop branch forever.
+        _install_yt_dlp(monkeypatch, [_DownloadError(self._PP_ERR)] * 40, dl_env)
+        with caplog.at_level("WARNING"):
+            with pytest.raises(DownloadError):
+                self._download(dl_env, options={"thumbnail": True})
+
+        drops = [r for r in caplog.records
+                 if "retrying without embed extras" in r.getMessage()]
+        assert len(drops) == 1, "the drop rung must burn at most once per download"
+
+    def test_pp_error_without_options_takes_the_normal_path(
+            self, dl_env, monkeypatch, caplog):
+        # No per-download options → no optional postprocessors → nothing to
+        # drop. The branch must not fire (and must not swallow the error).
+        _install_yt_dlp(monkeypatch, [_DownloadError(self._PP_ERR), None], dl_env)
+        with caplog.at_level("WARNING"):
+            out = self._download(dl_env)
+
+        assert not any("retrying without embed extras" in r.getMessage()
+                       for r in caplog.records)
+        assert Path(out["video_path"]).exists()
+        assert out["option_postprocessors_dropped"] is False
