@@ -9,6 +9,17 @@ const JOB_LABELS = {
   scout: "Scouting", download: "Downloading", generate: "Generating", upload: "Uploading",
 }
 
+// "tool:merge_clips" → "Merge clips". The raw job type read as a debug string
+// on the progress card ("tool:gif complete"); named types keep their
+// hand-tuned label above.
+function humanizeJobType(jobType) {
+  const t = String(jobType || "")
+  if (JOB_LABELS[t]) return JOB_LABELS[t]
+  const bare = t.replace(/^tool:/, "").replace(/[-_]+/g, " ").trim()
+  if (!bare) return "Job"
+  return bare.charAt(0).toUpperCase() + bare.slice(1)
+}
+
 export default function JobProgressCard({ jobId, jobType, message }) {
   const job = useAppStore((s) => s.activeJobs[jobId])
 
@@ -20,7 +31,7 @@ export default function JobProgressCard({ jobId, jobType, message }) {
   const step = job.step || message || ""
 
   const color = JOB_COLORS[jobType] || "primary"
-  const label = JOB_LABELS[jobType] || jobType
+  const label = humanizeJobType(jobType)
   const isRunning = status === "running"
   const isSuccess = status === "success"
   const isFailed = status === "failed"
