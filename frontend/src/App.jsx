@@ -36,6 +36,7 @@ const ToolHookAnalysis = lazy(() => import("./pages/tools/HookAnalysis"))
 const ToolTranslate = lazy(() => import("./pages/tools/Translate"))
 const ToolMetadata = lazy(() => import("./pages/tools/Metadata"))
 const ToolAutoChapters = lazy(() => import("./pages/tools/AutoChapters"))
+const ToolCompress = lazy(() => import("./pages/tools/Compress"))
 
 const LazyFallback = () => (
   <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100%", minHeight: 200 }}>
@@ -106,6 +107,7 @@ export default function App() {
               <Route path="tools/subtitles" element={<ToolSubtitles />} />
               <Route path="tools/auto-zoom" element={<ToolAutoZoom />} />
               <Route path="tools/transform" element={<ToolTransform />} />
+              <Route path="tools/compress" element={<ToolCompress />} />
               <Route path="tools/music-visualizer" element={<ToolMusicVisualizer />} />
               <Route path="tools/voiceover" element={<ToolVoiceover />} />
               <Route path="tools/hook-analysis" element={<ToolHookAnalysis />} />

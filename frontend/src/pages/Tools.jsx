@@ -27,6 +27,7 @@ import LabelOutlinedIcon from "@mui/icons-material/LabelOutlined"
 import FormatListNumberedIcon from "@mui/icons-material/FormatListNumbered"
 import ContentCutOutlinedIcon from "@mui/icons-material/ContentCutOutlined"
 import ZoomInMapOutlinedIcon from "@mui/icons-material/ZoomInMapOutlined"
+import CompressOutlinedIcon from "@mui/icons-material/CompressOutlined"
 
 // ── Catalog ────────────────────────────────────────────────────────────────
 //
@@ -49,6 +50,13 @@ const TOOLS = [
     title: "Transform",
     description: "Flip, rotate, loop, or change a clip's volume.",
     icon: <TransformIcon />,
+    category: "video",
+  },
+  {
+    id: "compress",
+    title: "Compress Video",
+    description: "Shrink a file for email, chat, or an upload limit. Pick a size and a strength.",
+    icon: <CompressOutlinedIcon />,
     category: "video",
   },
   {

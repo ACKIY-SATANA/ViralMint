@@ -705,6 +705,32 @@ async def subtitles_tool(
     return {"job_id": job.id}
 
 
+@router.post("/compress")
+async def compress_tool(
+    file: UploadFile = File(...),
+    resolution: Literal[
+        "original", "1280x720", "854x480", "640x360", "426x240"
+    ] = Form("original"),
+    level: Literal["maximum", "high", "medium", "low", "minimal"] = Form("high"),
+):
+    """Re-encode a video smaller — for email, chat apps and upload limits.
+
+    Two independent axes: `resolution` (keep the source size, or scale down to
+    a named height) and `level` (how hard to squeeze at that size). Local
+    FFmpeg only. Asking for a resolution TALLER than the source keeps the
+    source size rather than upscaling; the job reports it.
+    """
+    from backend.agents.job_helper import create_job
+    from backend.core.task_runner import dispatch
+    from backend.core.tool_runners import run_tool_compress
+    job = await create_job("tool:compress", "local", {
+        "resolution": resolution, "level": level,
+    })
+    in_path = await save_upload(file, job.id, VIDEO_EXTS, VIDEO_MAX_BYTES)
+    dispatch(run_tool_compress(job.id, in_path, resolution=resolution, level=level))
+    return {"job_id": job.id}
+
+
 @router.post("/auto-zoom")
 async def auto_zoom_tool(
     file: UploadFile = File(...),

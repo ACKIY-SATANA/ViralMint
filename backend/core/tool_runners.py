@@ -1769,3 +1769,170 @@ async def run_tool_auto_zoom(
         logger.info("TASK DONE  tool:auto_zoom | job=%s words=%d noop=%s", job_id[:8], len(words), noop)
     except Exception as e:
         await _tool_fail(job_id, e, cleanup, user_id, "auto_zoom")
+
+
+# ── Video compressor (free, local ffmpeg) ──────────────────────────────────
+
+
+# level → (CRF, audio bitrate). CRF is the quality knob libx264 actually
+# respects; higher = smaller + softer. The five steps are spaced ~3-4 CRF
+# apart because a smaller gap is not visible and a bigger one skips a useful
+# trade. Audio rides along: a 32-CRF video next to a 192k track is wasted
+# bytes, and a 18-CRF video next to a 64k track sounds broken.
+_COMPRESS_LEVELS: dict[str, tuple[int, str]] = {
+    "maximum": (32, "64k"),
+    "high":    (28, "96k"),
+    "medium":  (24, "128k"),
+    "low":     (21, "160k"),
+    "minimal": (18, "192k"),
+}
+
+# label → target height. Width is derived from the source aspect so we never
+# distort; "original" keeps the source resolution and only re-encodes.
+_COMPRESS_HEIGHTS: dict[str, int] = {
+    "original": 0,
+    "1280x720": 720,
+    "854x480":  480,
+    "640x360":  360,
+    "426x240":  240,
+}
+
+
+def compress_settings(level: str) -> tuple[int, str]:
+    """(crf, audio_bitrate) for a compression level. Unknown → the default.
+
+    Pure so the mapping is testable without invoking ffmpeg — same reason
+    `_build_speed_filters` is pure.
+    """
+    return _COMPRESS_LEVELS.get((level or "").lower(), _COMPRESS_LEVELS["high"])
+
+
+def compress_scale_filter(
+    src_w: int, src_h: int, resolution: str,
+) -> tuple[str, bool]:
+    """Build the scale filter for a compress run.
+
+    Returns ``(vf, downscaled)``. `vf` is "" when no scaling should happen —
+    either the caller asked for "original", the source dimensions are unknown,
+    or the requested height is TALLER than the source.
+
+    That last case is the one worth naming: picking "HD 720p" for a 480p clip
+    must not re-encode it up to 720p. Upscaling invents pixels, makes the file
+    BIGGER, and the user asked to compress. We keep the source size and report
+    `downscaled=False` so the runner can say so.
+
+    Height is the axis because these presets are named by height and the
+    sources are a mix of portrait and landscape; width comes from `-2`, which
+    both preserves aspect and rounds to an even number (libx264 rejects odd
+    dimensions).
+    """
+    target_h = _COMPRESS_HEIGHTS.get(resolution or "original", 0)
+    if not target_h or src_h <= 0:
+        return "", False
+    if target_h >= src_h:
+        return "", False
+    return f"scale=-2:{target_h}:flags=lanczos", True
+
+
+async def run_tool_compress(
+    job_id: str,
+    in_path: Path,
+    resolution: str = "original",
+    level: str = "high",
+    user_id: str = "local",
+):
+    """Re-encode a video smaller — for email, chat apps and upload limits.
+
+    Single-pass CRF rather than two-pass bitrate targeting: CRF holds a
+    consistent *quality* across the whole clip, which is what "make this
+    smaller without it looking bad" actually means. Two-pass only wins when
+    you must hit an exact byte budget, and we don't promise one — quoting a
+    predicted file size we can't honour on a high-motion clip would be worse
+    than quoting nothing.
+    """
+    from backend.api.tools import tool_out_path
+    from backend.core.ws_manager import ws_manager
+    from backend.services.video_utils import probe_media
+
+    logger.info(
+        "TASK START tool:compress | job=%s res=%s level=%s",
+        job_id[:8], resolution, level,
+    )
+    cleanup = [in_path]
+    try:
+        in_bytes = in_path.stat().st_size if in_path.exists() else 0
+        src_w, src_h, _dur = await asyncio.to_thread(probe_media, in_path)
+        crf, audio_bitrate = compress_settings(level)
+        vf, downscaled = compress_scale_filter(src_w, src_h, resolution)
+
+        if resolution != "original" and not downscaled and src_h > 0:
+            await ws_manager.send_constraint_warning(
+                constraint="compress_upscale", severity="info",
+                message=(
+                    f"This video is already {src_w}×{src_h} — kept its size "
+                    f"rather than scaling up to {resolution}, which would have "
+                    "made the file bigger."
+                ),
+                user_id=user_id,
+            )
+
+        out_path = tool_out_path(job_id, ".mp4")
+
+        def _encode():
+            cmd = ["ffmpeg", "-y", "-i", str(in_path)]
+            if vf:
+                cmd += ["-vf", vf]
+            cmd += [
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", audio_bitrate,
+                # Puts the moov atom up front so the result streams/scrubs
+                # immediately instead of needing a full download first.
+                "-movflags", "+faststart",
+                str(out_path),
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+            if res.returncode != 0:
+                raise RuntimeError(f"Compression failed: {res.stderr[-400:]}")
+
+        await _tool_progress(job_id, 25, "Compressing...", user_id)
+        await asyncio.to_thread(_encode)
+
+        out_bytes = out_path.stat().st_size if out_path.exists() else 0
+        # An already-compressed source can come out BIGGER. That's a real
+        # outcome, not a failure — report both numbers and let the user judge
+        # rather than silently handing back a worse file or erroring on work
+        # that did exactly what was asked.
+        if out_bytes and in_bytes and out_bytes >= in_bytes:
+            await ws_manager.send_constraint_warning(
+                constraint="compress_no_gain", severity="warning",
+                message=(
+                    "This video was already well compressed — the result "
+                    f"({out_bytes // 1024} KB) isn't smaller than the original "
+                    f"({in_bytes // 1024} KB). Try a lower resolution or a "
+                    "stronger level."
+                ),
+                user_id=user_id,
+            )
+
+        saved_pct = (
+            round((1 - out_bytes / in_bytes) * 100, 1)
+            if in_bytes and out_bytes else 0.0
+        )
+        await _tool_success(
+            job_id, out_path, cleanup, user_id,
+            extra_output={
+                "input_bytes": in_bytes,
+                "output_bytes": out_bytes,
+                "saved_pct": saved_pct,
+                "resolution": resolution,
+                "scaled": downscaled,
+                "level": level,
+            },
+        )
+        logger.info(
+            "TASK DONE  tool:compress | job=%s %d→%d bytes (%.1f%%)",
+            job_id[:8], in_bytes, out_bytes, saved_pct,
+        )
+    except Exception as e:
+        await _tool_fail(job_id, e, cleanup, user_id, "compress")
