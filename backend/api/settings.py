@@ -390,3 +390,91 @@ async def open_folder(body: dict):
         return {"ok": True, "path": str(target)}
     except Exception as e:
         return {"ok": False, "error": str(e), "path": str(target)}
+
+
+# ── Motion Graphics (HyperFrames) — on-demand Node plugin ─────────────────────
+# Nothing motion-related ships in the base install. The portable Node runtime
+# and the HyperFrames npm package are downloaded on opt-in and live entirely in
+# the user's data dir, so the feature can be added and removed without touching
+# the app. Rendering is local (headless Chrome + FFmpeg) and costs nothing.
+
+@router.get("/settings/motion-graphics/status")
+async def motion_graphics_status():
+    """Plugin install state for the Settings card to poll (every 2s)."""
+    from backend.services.hyperframes_service import HyperFramesService
+    return HyperFramesService.get_install_state()
+
+
+@router.post("/settings/motion-graphics/install")
+async def motion_graphics_install():
+    """Trigger the plugin install (portable Node + npm install) in the
+    background. Idempotent; returns immediately. The UI polls status for
+    progress."""
+    from backend.services.hyperframes_service import HyperFramesService
+    return await HyperFramesService.install_plugin()
+
+
+@router.post("/settings/motion-graphics/uninstall")
+async def motion_graphics_uninstall():
+    """Remove the entire motion/ plugin dir."""
+    from backend.services.hyperframes_service import HyperFramesService
+    return await HyperFramesService.uninstall_plugin()
+
+
+@router.post("/settings/motion-graphics/test")
+async def motion_graphics_test():
+    """End-to-end smoke render of the bundled kinetic-hook template.
+
+    Confirms the whole chain (portable Node → HyperFrames CLI → headless Chrome
+    → FFmpeg) still produces a real MP4. The status is always 200 — the `ok`
+    flag carries the verdict, so the UI renders a result rather than an error.
+    """
+    import time as _time
+    from backend.services.hyperframes_service import HyperFramesService
+    from backend.services.motion_render_service import MotionRenderService
+
+    if not HyperFramesService.is_installed():
+        return {
+            "ok": False, "latency_ms": 0, "output_size_kb": None,
+            "error": "not_installed",
+            "detail": "Motion Graphics isn't installed yet. Click Install above first.",
+        }
+
+    start = _time.monotonic()
+    try:
+        out = await MotionRenderService.render(
+            template_id="kinetic_hook",
+            variables={
+                "kicker": "MOTION GRAPHICS",
+                "title": "It Works",
+                "subtitle": "rendered locally",
+                "accent": "#ffd60a",
+                "bg": "#0b0b14",
+            },
+            aspect="9:16",
+            # A verification render, not a deliverable: draft quality and no
+            # supersample keep it fast.
+            quality="draft",
+            supersample=False,
+        )
+        latency_ms = round((_time.monotonic() - start) * 1000)
+        size_kb = round(out.stat().st_size / 1024)
+        # Smoke test only — don't keep the output around.
+        try:
+            out.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return {
+            "ok": True, "latency_ms": latency_ms,
+            "output_size_kb": size_kb, "error": None, "detail": None,
+        }
+    except Exception as e:
+        latency_ms = round((_time.monotonic() - start) * 1000)
+        logger.info(
+            "Motion Graphics smoke test failed in %dms: %s: %s",
+            latency_ms, type(e).__name__, str(e)[:200],
+        )
+        return {
+            "ok": False, "latency_ms": latency_ms, "output_size_kb": None,
+            "error": type(e).__name__, "detail": str(e)[:200],
+        }

@@ -1,0 +1,84 @@
+<!doctype html>
+<!-- Variables are declared on the <html> root (canonical location — HyperFrames
+     reads data-composition-variables from document.documentElement). -->
+<html lang="en"
+  data-composition-variables='[
+    {"id":"kicker","type":"string","label":"Kicker","default":"TRENDING NOW"},
+    {"id":"title","type":"string","label":"Headline","default":"Default Title Goes Here"},
+    {"id":"subtitle","type":"string","label":"Subtitle","default":"watch till the end"},
+    {"id":"accent","type":"color","label":"Accent","default":"#ffd60a"},
+    {"id":"bg","type":"color","label":"Background","default":"#0b0b14"}
+  ]'>
+  <head>
+    <meta charset="UTF-8" />
+    <title>ViralMint Kinetic Hook</title>
+    <!-- GSAP vendored locally so renders work offline (no CDN dependency). -->
+    <script src="assets/gsap.min.js"></script>
+    <style>
+      html, body { margin: 0; padding: 0; width: 1080px; height: 1920px; overflow: hidden; }
+      #stage {
+        width: 1080px; height: 1920px; position: relative;
+        background: var(--bg, #0b0b14);
+        font-family: "Helvetica Neue", Arial, sans-serif;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+      }
+      #kicker {
+        color: var(--accent, #ffd60a); font-size: 44px; font-weight: 800;
+        letter-spacing: 6px; text-transform: uppercase; opacity: 0; margin-bottom: 32px;
+      }
+      #title {
+        color: #fff; font-size: 120px; font-weight: 900; line-height: 1.05;
+        text-align: center; padding: 0 80px; opacity: 0;
+      }
+      #title .word { display: inline-block; }
+      #bar { width: 0; height: 14px; background: var(--accent, #ffd60a); border-radius: 8px; margin-top: 48px; }
+      #sub { color: #c7c7d1; font-size: 48px; font-weight: 600; margin-top: 40px; opacity: 0; }
+    </style>
+  </head>
+  <body>
+    <!-- No data-duration on the composition root — duration comes from the
+         GSAP timeline (tl.duration()), extended to {{_vm_duration}} below. -->
+    <div id="stage" data-composition-id="hook" data-width="1080" data-height="1920"
+         data-start="0">
+      <div id="kicker"></div>
+      <div id="title"></div>
+      <div id="bar"></div>
+      <div id="sub"></div>
+    </div>
+
+    <script>
+      // ViralMint injects script content as JSON variables; the AI never writes
+      // JS here — it only fills declared `data-composition-variables`.
+      const v = window.__hyperframes.getVariables();
+      const stage = document.getElementById("stage");
+      stage.style.setProperty("--accent", v.accent);
+      stage.style.setProperty("--bg", v.bg);
+      document.getElementById("kicker").textContent = v.kicker;
+      document.getElementById("sub").textContent = v.subtitle;
+
+      // Split the title into per-word spans for a staggered kinetic reveal.
+      document.getElementById("title").innerHTML = String(v.title)
+        .split(/\s+/)
+        .map((w) => `<span class="word">${w}</span>`)
+        .join(" ");
+
+      // Seekable GSAP timeline. HyperFrames drives it frame-by-frame.
+      // Contract (spike-verified): window.__timelines[<composition-id>] = paused timeline.
+      const tl = gsap.timeline({ paused: true });
+      tl.to("#kicker", { opacity: 1, y: 0, duration: 0.4 }, 0.2)
+        .fromTo("#title", { opacity: 0 }, { opacity: 1, duration: 0.3 }, 0.5)
+        .from("#title .word", { y: 80, opacity: 0, stagger: 0.12, duration: 0.5 }, 0.6)
+        .to("#bar", { width: 360, duration: 0.6 }, 1.4)
+        .to("#sub", { opacity: 1, duration: 0.4 }, 1.8);
+
+      // Canonical duration: hold the composition for the requested length by
+      // extending the timeline (tl.duration() drives the render), not a root
+      // data-duration. _vm_duration is injected by the render service.
+      const dur = Number(v._vm_duration) || 6;
+      tl.set({}, {}, dur);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["hook"] = tl;
+    </script>
+  </body>
+</html>

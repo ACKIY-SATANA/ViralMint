@@ -42,6 +42,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reads each table's columns once and skips those ALTERs entirely.
 
 ### Added
+- **Motion Graphics — render designed video, locally.** A new kind of output
+  alongside stock footage and clips: motion-graphics pieces built out of type,
+  shapes and animation rather than filmed footage. Kinetic typography hooks,
+  stat cards, lower thirds — the sort of thing that normally means opening After
+  Effects.
+
+  It renders entirely on your machine. There is no model in the loop, so the
+  same inputs give the same video every time, and you can render it a hundred
+  times without spending anything.
+
+  The engine is an optional add-on rather than part of the download. Open
+  Settings → Add-ons and install it once: ViralMint fetches a portable Node
+  runtime and the HyperFrames engine into your data folder, verifies the
+  archive against the checksums nodejs.org publishes, and then renders a real
+  video before it will call the install good — so a broken setup fails at
+  install time instead of the first time you need it. "Remove" puts the disk
+  back. A "Test render" button re-proves the whole chain whenever you want it.
+
+  Because compositions are GSAP-driven and GSAP ships under a licence that is
+  not free software, it is not committed to this repository. It is installed
+  alongside the engine on your machine and copied into each render instead.
+
 - **Video Download.** A new tool page for the thing the app could always do but
   never let you choose about: paste up to 20 links and pull the videos down
   from YouTube, TikTok, Bilibili, X and the 1,800+ other sites yt-dlp supports.

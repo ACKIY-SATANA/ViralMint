@@ -92,3 +92,22 @@ class AIProviderError(ViralMintError):
 
 class AIKeyMissingError(AIProviderError):
     pass
+
+
+# ── Motion Graphics ───────────────────────────────────────────────────────────
+
+class MotionGraphicsError(ViralMintError):
+    """Base for the local motion-graphics (HyperFrames) render path."""
+
+
+class HyperFramesNotInstalledError(MotionGraphicsError):
+    """The on-demand HyperFrames plugin is missing.
+
+    Raised by the install gate every motion endpoint pre-flights, so the caller
+    can answer with a "install it from Settings" pointer instead of a stack
+    trace. Distinct from MotionRenderError: nothing was attempted.
+    """
+
+
+class MotionRenderError(MotionGraphicsError):
+    """A render was attempted and did not produce a usable MP4."""

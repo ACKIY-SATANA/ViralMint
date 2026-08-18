@@ -64,6 +64,14 @@ const useAppStore = create((set, get) => ({
   activeWizard: null,
   setActiveWizard: (w) => set({ activeWizard: w }),
 
+  // Motion Graphics plugin opt-in state. Set by the Settings card and by the
+  // route gate, so the sidebar entry and the Tools card can reflect "installed"
+  // without each of them polling the same endpoint. `null` = not yet known,
+  // which is deliberately distinct from `false`: an entry that flashes
+  // "not installed" for one frame on every page load reads as broken.
+  motionInstalled: null,
+  setMotionInstalled: (v) => set({ motionInstalled: v }),
+
   // Jobs (polling from API — Dashboard uses this)
   jobs: [],
   setJobs: (j) => set({ jobs: j }),

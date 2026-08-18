@@ -1,0 +1,16 @@
+{
+  "id": "kinetic_hook",
+  "name": "Kinetic Hook",
+  "description": "Bold kinetic-typography hook — staggered word reveal over a solid background with an accent bar. Great as a 6s opener or standalone hook.",
+  "duration_seconds": 6,
+  "default_aspect": "9:16",
+  "aspects": ["9:16", "9:16-4k"],
+  "supports": { "audio": false, "captions": false },
+  "variables": [
+    { "id": "kicker",   "type": "string", "label": "Kicker (small eyebrow text)", "default": "TRENDING NOW" },
+    { "id": "title",    "type": "string", "label": "Headline",                    "default": "Your Hook Goes Here" },
+    { "id": "subtitle", "type": "string", "label": "Subtitle",                    "default": "watch till the end" },
+    { "id": "accent",   "type": "color",  "label": "Accent color",               "default": "#ffd60a" },
+    { "id": "bg",       "type": "color",  "label": "Background color",            "default": "#0b0b14" }
+  ]
+}

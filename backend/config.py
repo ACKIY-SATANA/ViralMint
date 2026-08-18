@@ -103,6 +103,22 @@ class Settings(BaseSettings):
     def TMP_DIR(self) -> Path:
         return self.STORAGE_ROOT / "tmp"
 
+    # ── Motion Graphics (HyperFrames plugin) ──────────
+    # The on-demand Node runtime + npm package install here. Deliberately a
+    # sibling of storage/ rather than inside it: uninstalling the plugin does
+    # rmtree() on this whole directory, and nothing the user made should ever
+    # be reachable from that path.
+    @property
+    def MOTION_DIR(self) -> Path:
+        return DATA_DIR / "motion"
+
+    # Render motion pieces at 4x device-pixel ratio and let the encoder
+    # downscale. Text and vectors re-rasterize, which is what a motion graphic
+    # is made of, so edges land genuinely sharper. Costs render time only —
+    # rendering is local, so this is a time trade and never a money one. Set
+    # MOTION_SUPERSAMPLE=false in .env for faster, softer output.
+    MOTION_SUPERSAMPLE: bool = True
+
 
 def _ensure_secrets(s: Settings) -> Settings:
     """Auto-generate SECRET_KEY and ENCRYPTION_KEY if missing OR invalid.

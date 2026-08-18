@@ -5,7 +5,9 @@ import {
 import MonitorHeartIcon from "@mui/icons-material/MonitorHeartOutlined"
 import KeyIcon from "@mui/icons-material/VpnKeyOutlined"
 import SmartToyIcon from "@mui/icons-material/SmartToyOutlined"
+import MovieFilterIcon from "@mui/icons-material/MovieFilterOutlined"
 import HealthDashboard from "../components/settings/HealthDashboard"
+import MotionGraphicsSection from "../components/settings/MotionGraphicsSection"
 import AIProviderSection from "../components/settings/AIProviderSection"
 import ServiceKeysSection from "../components/settings/ServiceKeysSection"
 import useSettings from "../hooks/useSettings"
@@ -115,6 +117,16 @@ export default function Settings() {
           accentColor="#2563eb"
         >
           <ServiceKeysSection settings={settings} updateSettings={updateSettings} />
+        </Section>
+
+        {/* Optional add-ons */}
+        <Section
+          icon={<MovieFilterIcon sx={{ fontSize: 20 }} />}
+          title="Add-ons"
+          description="Optional engines that install on demand into your data folder"
+          accentColor="#7c3aed"
+        >
+          <MotionGraphicsSection />
         </Section>
 
         {/* System Health */}

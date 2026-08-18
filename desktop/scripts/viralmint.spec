@@ -114,6 +114,16 @@ else:
         "`npm install && npm run build` inside frontend/ first."
     )
 
+# Bundled Motion Graphics templates. These are read by the BACKEND process
+# (motion_render_service stages them per render), so they have to land in this
+# bundle's _MEIPASS rather than the launcher's. They deliberately do NOT go into
+# DATA_DIR/motion, which the plugin uninstall deletes wholesale.
+_motion_assets = os.path.join(PROJECT_ROOT, "motion_assets")
+if os.path.isdir(_motion_assets):
+    datas.append((_motion_assets, "motion_assets"))
+else:
+    print(f"WARN: {_motion_assets} not found — Motion Graphics templates will be missing")
+
 # Pure-import packages that are loaded dynamically — PyInstaller's static
 # analysis can't follow them.
 hiddenimports += [
