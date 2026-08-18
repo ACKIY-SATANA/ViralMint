@@ -14,6 +14,7 @@ const StockVideo = lazy(() => import("./pages/StockVideo"))
 const Channels = lazy(() => import("./pages/Channels"))
 const Messaging = lazy(() => import("./pages/Messaging"))
 const ClipStudio = lazy(() => import("./pages/ClipStudio"))
+const MotionGraphics = lazy(() => import("./pages/MotionGraphics"))
 const Tools = lazy(() => import("./pages/Tools"))
 
 // Tools — single-purpose utility pages. Each is a thin wrapper around the
@@ -96,6 +97,7 @@ export default function App() {
               <Route path="create" element={<Navigate to="/stock" />} />
               <Route path="cron" element={<Navigate to="/" />} />
               <Route path="clips" element={<ClipStudio />} />
+              <Route path="motion" element={<MotionGraphics />} />
               <Route path="tools" element={<Tools />} />
               <Route path="tools/captions" element={<ToolCaptions />} />
               <Route path="tools/reframe" element={<ToolReframe />} />

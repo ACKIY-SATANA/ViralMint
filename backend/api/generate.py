@@ -3,14 +3,17 @@
 """
 REST endpoints for video generation.
 
-POST /api/generate/stock         — Stock footage (Pexels)
-POST /api/generate/split-scenes  — AI-split script into scenes with Pexels keywords
+POST /api/generate/stock          — Stock footage (Pexels)
+POST /api/generate/split-scenes   — AI-split script into scenes with Pexels keywords
+POST /api/generate/motion/studio/* — the embedded Motion Graphics studio
 """
+import asyncio
 import json
 import logging
-from typing import Optional
+from pathlib import Path
+from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -176,3 +179,196 @@ def _fallback_split(script: str) -> dict:
         keywords = [w.lower().strip(".,!?") for w in chunk.split()[:4] if len(w) > 3]
         scenes.append({"text": chunk, "keywords": keywords[:3]})
     return {"scenes": scenes[:8]}
+
+
+# ── Motion Graphics studio ────────────────────────────────────────────────────
+# The engine is an on-demand plugin, so EVERY endpoint below pre-flights the
+# install and answers with a structured envelope rather than a 500. "This needs
+# a one-click install" is a state the UI can act on, not an error.
+
+def _studio_gate():
+    """Is the Motion Graphics plugin installed? Returns the install envelope
+    when it isn't, or None to proceed. The envelope's single source is the
+    exception class, so the API and the service layer can't drift on wording."""
+    from backend.core.exceptions import HyperFramesNotInstalledError
+    from backend.services.hyperframes_service import HyperFramesService
+    if not HyperFramesService.is_installed():
+        return HyperFramesNotInstalledError.ENVELOPE.copy()
+    return None
+
+
+@router.post("/motion/studio/start")
+async def motion_studio_start(mode: str = "dark", restart: bool = False):
+    """Start (idempotently) the embedded studio, themed for the app's `mode`.
+
+    The theme is re-injected on every call so switching the app between light
+    and dark re-skins the studio too. `restart=true` forces a clean restart,
+    which anything that writes the composition behind the studio's back needs —
+    a reused preview client can otherwise keep showing the previous one.
+    → {ok, port, mode}.
+    """
+    gate = _studio_gate()
+    if gate:
+        return gate
+    from backend.services.studio_service import StudioService
+    try:
+        return await StudioService.ensure_running(mode=mode, force=restart)
+    except Exception as e:
+        raise HTTPException(status_code=500,
+                            detail=f"Could not start studio: {str(e)[:160]}")
+
+
+@router.post("/motion/studio/stop")
+async def motion_studio_stop():
+    """Stop the preview server. Safe to call when nothing is running."""
+    from backend.services.studio_service import StudioService
+    return await StudioService.stop()
+
+
+@router.post("/motion/studio/sync-renders")
+async def motion_studio_sync_renders():
+    """Import any new studio-exported MP4s into the Library.
+
+    Polled by the studio page while it is open, so an Export shows up in the
+    Library without the user having to do anything. Never raises: a failed
+    import is retried by the next poll, and an error toast on a background
+    sync would be noise. → {imported, ids}.
+    """
+    gate = _studio_gate()
+    if gate:
+        return {"imported": 0, "ids": []}
+    from backend.services.studio_service import StudioService
+    try:
+        return await StudioService.import_renders()
+    except Exception as e:
+        logger.warning("studio sync-renders failed: %s", e)
+        return {"imported": 0, "ids": []}
+
+
+@router.get("/motion/studio/comps")
+async def motion_studio_list_comps():
+    """Previous compositions — every composition replaced by a newer one is
+    archived rather than overwritten. → {comps: [{file, size, modified}]}."""
+    gate = _studio_gate()
+    if gate:
+        return {"comps": []}
+    from backend.services.studio_service import StudioService
+    return {"comps": await asyncio.to_thread(StudioService.list_comps)}
+
+
+class MotionCleanupRequest(BaseModel):
+    """`files` omitted → clear ALL archived compositions plus studio exports
+    already imported into the Library. `files` given → delete just those."""
+    files: Optional[list] = None
+
+
+@router.post("/motion/studio/comps/cleanup")
+async def motion_studio_cleanup(body: MotionCleanupRequest):
+    gate = _studio_gate()
+    if gate:
+        return {"removed": [], "freed_mb": 0}
+    from backend.services.studio_service import StudioService
+    return await asyncio.to_thread(StudioService.cleanup_comps, body.files)
+
+
+@router.post("/motion/studio/assets")
+async def motion_studio_stage_asset(file: UploadFile = File(...)):
+    """Stage an image, video or audio file into the studio project's assets/,
+    so a composition can build it in. → {file, type, duration}."""
+    gate = _studio_gate()
+    if gate:
+        return gate
+    from backend.api.tools import read_upload_capped
+    from backend.services.studio_service import StudioService
+    # A capped read, not `await file.read()`: the cap is 200 MB and a user can
+    # drop a multi-gigabyte video into a file picker. Reading it whole to then
+    # reject it on size would already have cost the memory.
+    data = await read_upload_capped(file, StudioService.ASSET_MAX_BYTES, "Asset")
+    try:
+        return await asyncio.to_thread(
+            StudioService.stage_asset, file.filename or "file", data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class MotionSubmitRequest(BaseModel):
+    """Set an externally-authored composition live in the studio."""
+    html: str
+    render: bool = False
+    aspect_ratio: str = "9:16"
+    title: Optional[str] = None
+
+
+@router.post("/motion/studio/submit")
+async def motion_studio_submit(body: MotionSubmitRequest):
+    """Validate a composition, set it live, and optionally render it.
+
+    Validation failures come back as `{ok: false, issues: [...]}` rather than an
+    error, so whoever wrote the HTML — a person or a tool — can fix the named
+    problems and resubmit. That is a deterministic loop; silently repairing
+    someone's composition is not. → {ok, file, archived, issues, job_id?}.
+    """
+    gate = _studio_gate()
+    if gate:
+        return gate
+    from backend.agents.generator_motion import ASPECT_DIMS
+    if body.aspect_ratio not in ASPECT_DIMS:
+        raise HTTPException(status_code=400,
+                            detail=f"Unsupported aspect {body.aspect_ratio}")
+    html = (body.html or "").strip()
+    if not html or "<html" not in html.lower():
+        raise HTTPException(status_code=400, detail="A complete HTML document is required")
+    if len(html.encode()) > 1_000_000:
+        raise HTTPException(status_code=400, detail="Composition too large (max 1 MB)")
+
+    from backend.services.studio_service import StudioService
+    issues = await StudioService._all_issues(html, StudioService.project_dir() / "assets")
+    if issues:
+        return {"ok": False, "issues": issues,
+                "hint": "Fix these contract violations and resubmit the complete HTML."}
+    result = await StudioService.import_composition(html)
+    resp = {"ok": True, "issues": [], **result}
+    if body.render:
+        resp["job_id"] = await _dispatch_studio_render(
+            body.aspect_ratio, body.title, quality="high")
+    return resp
+
+
+class MotionExportRequest(BaseModel):
+    aspect_ratio: str = "9:16"
+    title: Optional[str] = None
+    # "high" renders at 4x device-pixel ratio and downscales, so type and
+    # vectors re-rasterize sharper; "standard" renders at 1080p and is faster.
+    quality: Literal["standard", "high"] = "high"
+
+
+@router.post("/motion/studio/export")
+async def motion_studio_export(body: MotionExportRequest):
+    """Render the live studio composition to MP4 and put it in the Library.
+
+    The studio has its own Export; this is the same thing reachable from
+    ViralMint's side, so a composition can be exported without leaving the
+    page's own controls. → {job_id}.
+    """
+    gate = _studio_gate()
+    if gate:
+        return gate
+    from backend.agents.generator_motion import ASPECT_DIMS
+    if body.aspect_ratio not in ASPECT_DIMS:
+        raise HTTPException(status_code=400,
+                            detail=f"Unsupported aspect {body.aspect_ratio}")
+    return {"job_id": await _dispatch_studio_render(
+        body.aspect_ratio, body.title, body.quality)}
+
+
+async def _dispatch_studio_render(aspect_ratio: str, title: Optional[str],
+                                  quality: str) -> str:
+    """Create + dispatch the render job. One place, so the two callers can't
+    drift on job type or on what `quality` means."""
+    from backend.agents.job_helper import create_job
+    from backend.core.task_runner import dispatch, run_studio_render
+    job = await create_job("motion_render", "local",
+                           {"title": (title or "studio composition")[:200]})
+    dispatch(run_studio_render(job_id=job.id, aspect_ratio=aspect_ratio,
+                               title=title, supersample=(quality == "high")))
+    return job.id

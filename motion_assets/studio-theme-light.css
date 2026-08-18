@@ -1,0 +1,52 @@
+/* ViralMint LIGHT-mode override for the embedded HyperFrames Studio.
+   Appended AFTER studio-theme.css when the app is in light mode, so these
+   surface/text rules win. The terracotta accent from the base theme stays;
+   here we flip the dark Tailwind surfaces/text to ViralMint's linen-paper
+   light tokens (theme.js: #f5f0ea / #fbf8f4 / #f7f2ec, text #2d2b28 / #6b6560). */
+
+:root { color-scheme: light !important; }
+html, body, #root { background: #f5f0ea !important; }
+
+/* Dark surfaces → warm light. */
+.bg-black, .bg-neutral-950, .bg-neutral-950\/96, .bg-zinc-950 { background-color: #f5f0ea !important; }
+.bg-neutral-900, .bg-zinc-900 { background-color: #fbf8f4 !important; }
+.bg-neutral-850 { background-color: #f7f2ec !important; }
+.bg-neutral-800, .bg-zinc-800 { background-color: #f1eadf !important; }
+.bg-neutral-700, .bg-zinc-700 { background-color: #e8ddd0 !important; }
+
+/* Light-on-dark text → ViralMint dark text. */
+.text-white, .text-white\/90, .text-white\/80, .text-white\/70, .text-white\/60,
+.text-neutral-200, .text-neutral-300, .text-zinc-200, .text-zinc-300 { color: #2d2b28 !important; }
+.text-neutral-400, .text-zinc-400 { color: #6b6560 !important; }
+/* neutral-500/600/700 are mid/dark greys that already read on a light bg — leave. */
+
+/* Borders → light divider. */
+.border-neutral-800, .border-neutral-800\/50, .border-neutral-700, .border-neutral-700\/50,
+.border-zinc-800, .border-white\/10, .border-white\/5 { border-color: rgba(0, 0, 0, 0.08) !important; }
+
+/* Accent text needs the deeper terracotta for contrast on light. */
+.text-studio-accent     { color: #c96442 !important; }
+.text-studio-accent\/50 { color: #c9644280 !important; }
+.text-studio-accent\/80 { color: #c96442cc !important; }
+
+/* The timeline canvas sets its dark background via an INLINE style
+   (background: rgb(10,10,11)); an external !important rule still wins over a
+   non-important inline value. Target its class combo → warm light. */
+.border-t.select-none.overflow-hidden.cursor-default { background: #f1eadf !important; }
+.bg-\[\#0a0a0b\], .bg-\[\#0A0A0B\], .bg-\[\#09090b\], .bg-\[\#09090B\] { background-color: #f1eadf !important; }
+
+/* CodeMirror 6 code editor (ships the dark "One Dark" theme, #282c34) → light.
+   The token hues are mid-tones that read fine on light; we flip the container
+   background, default text, gutter, active line, caret + selection so it stops
+   being a dark block inside the light app. !important beats CM's theme classes. */
+.cm-editor, .cm-editor .cm-gutters { background-color: #fbf8f4 !important; }
+.cm-editor .cm-content { color: #2d2b28 !important; }
+.cm-editor .cm-gutters { color: #9a948c !important; border-right: 1px solid rgba(0, 0, 0, 0.08) !important; }
+.cm-editor .cm-activeLine { background-color: rgba(201, 100, 66, 0.06) !important; }
+.cm-editor .cm-activeLineGutter { background-color: rgba(201, 100, 66, 0.10) !important; }
+.cm-editor .cm-cursor, .cm-editor .cm-dropCursor { border-left-color: #c96442 !important; }
+.cm-editor .cm-selectionBackground, .cm-editor.cm-focused .cm-selectionBackground { background-color: #c9644233 !important; }
+
+/* Light scrollbars + selection. */
+*::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.16) !important; }
+::selection { background: #c9644240; }

@@ -62,6 +62,31 @@ _CAPTION_STYLE_IDS = tuple(k for k in _CAPTION_STYLE_DEFS if k != "brainrot")
 CaptionStyleId = Literal[_CAPTION_STYLE_IDS]
 
 
+async def read_upload_capped(file: UploadFile, max_bytes: int,
+                             label: str = "File") -> bytes:
+    """Read an upload into memory, aborting AT the cap rather than after it.
+
+    `await file.read()` materializes the whole body before any size check can
+    reject it, so a multi-gigabyte upload costs the memory whether or not it is
+    allowed. Reading in chunks and stopping one byte over the limit turns that
+    into a cheap 413.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1 << 20)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                413, f"{label} too large (max {max_bytes // 1024 // 1024} MB)")
+        chunks.append(chunk)
+    if not total:
+        raise HTTPException(400, f"{label} is empty")
+    return b"".join(chunks)
+
+
 async def save_upload(
     file: UploadFile,
     job_id: str,

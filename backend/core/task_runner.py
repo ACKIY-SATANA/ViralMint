@@ -1203,6 +1203,79 @@ async def run_news_save(
         await update_job_status(job_id, "failed", error_message=str(e))
 
 
+async def run_studio_render(job_id: str, aspect_ratio: str = "9:16",
+                            title: str | None = None,
+                            supersample: bool | None = None, **kwargs):
+    """Render the live studio composition to MP4 and land it in the Library.
+
+    Holds the studio's author lock for the render itself: index.html is a
+    single mutable file, and a composition swapped in halfway through a render
+    produces a video that is half one piece and half another.
+    """
+    from uuid import uuid4
+    from pathlib import Path
+    from backend.agents.job_helper import create_job, update_job_status, job_cancelled
+    from backend.agents.generator_motion import MotionGeneratorAgent
+    from backend.config import settings
+    from backend.core.exceptions import JobCancelledError
+    from backend.core.ws_manager import ws_manager
+    from backend.services.motion_render_service import MotionRenderService
+    from backend.services.studio_service import StudioService
+    from backend.services.video_utils import probe_duration
+
+    logger.info("TASK START studio-render | job=%s aspect=%s", job_id[:8], aspect_ratio)
+    try:
+        await update_job_status(job_id, "running", progress_pct=15,
+                                current_step="Rendering the composition")
+        if await job_cancelled(job_id):
+            raise JobCancelledError("Render cancelled before it started")
+        out = settings.GENERATED_DIR / f"motion_{uuid4().hex[:12]}.mp4"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        async with StudioService._author_lock:
+            video = await MotionRenderService.render_project(
+                StudioService.project_dir(), aspect_ratio, out_path=out, keep=True,
+                supersample=supersample)
+        # A cancelled render must not land in the Library or overwrite
+        # "cancelled" with "success" — check again now that the slow part is
+        # done and before anything is persisted.
+        if await job_cancelled(job_id):
+            await asyncio.to_thread(Path(video).unlink, True)
+            raise JobCancelledError("Render cancelled — output discarded")
+        await update_job_status(job_id, "running", progress_pct=85,
+                                current_step="Saving to library")
+        dur = await asyncio.to_thread(probe_duration, video, 0.0)
+        thumb = await MotionGeneratorAgent._thumbnail(video)
+        gen_id = await MotionGeneratorAgent._save(
+            user_id="local", title=(title or "Motion composition")[:120], variables={},
+            niche=None, video_path=video, thumb_path=thumb, audio_path=None,
+            aspect_ratio=aspect_ratio,
+            duration_seconds=int(round(dur)) if dur else None,
+            script=None, caption_status=None)
+        await update_job_status(job_id, "success", progress_pct=100, current_step="Done",
+                                output_data={"generated_video_id": gen_id,
+                                             "source_type": "motion_graphics"})
+        # create_job announced job_started to every listener. Without a matching
+        # terminal broadcast the global active-jobs pill lingers until some
+        # unrelated fetch reconciles it.
+        await ws_manager.send({
+            "type": "job_complete", "job_id": job_id, "job_type": "motion_render",
+            "result": {"generated_video_id": gen_id, "source_type": "motion_graphics"},
+        }, "local")
+        logger.info("TASK DONE  studio-render | job=%s gen=%s", job_id[:8], gen_id[:8])
+    except Exception as e:
+        from backend.core.exceptions import JobCancelledError as _JC
+        from backend.agents.job_helper import update_job_status as _u
+        from backend.core.ws_manager import ws_manager as _ws
+        if isinstance(e, _JC):
+            logger.info("TASK CANCELLED studio-render | job=%s", job_id[:8])
+            await _u(job_id, "cancelled", current_step="Cancelled")
+            return
+        logger.error("TASK FAIL  studio-render | job=%s: %s", job_id[:8], e, exc_info=True)
+        await _u(job_id, "failed", error_message=str(e))
+        await _ws.send({"type": "job_failed", "job_id": job_id,
+                        "error": f"Motion render failed: {e}"}, "local")
+
+
 def dispatch(coro):
     """Fire-and-forget an async task with concurrency limiting (max 3 concurrent)."""
     logger.debug("Dispatching async task: %s", coro.__qualname__ if hasattr(coro, '__qualname__') else type(coro).__name__)

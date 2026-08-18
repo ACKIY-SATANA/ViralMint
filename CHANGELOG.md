@@ -64,6 +64,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   not free software, it is not committed to this repository. It is installed
   alongside the engine on your machine and copied into each render instead.
 
+- **The Motion Graphics studio.** A new page in the sidebar embeds a full
+  compositing studio: timeline, live preview, layers and variables, an asset
+  library and Export. Design a piece, scrub it, adjust it, render it.
+
+  It runs on your machine and is served from the app's own address, so it keeps
+  its state between visits, and it is re-skinned to match whichever theme you
+  are using.
+
+  Exports land in your Library on their own — the page notices new renders
+  while it is open and imports them, so a finished piece is in the same place
+  as everything else the app makes, ready to caption, reframe or export like
+  any other video. Every composition you replace is archived rather than
+  overwritten, and a Comps list lets you clear the ones you no longer want.
+
 - **Video Download.** A new tool page for the thing the app could always do but
   never let you choose about: paste up to 20 links and pull the videos down
   from YouTube, TikTok, Bilibili, X and the 1,800+ other sites yt-dlp supports.

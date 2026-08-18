@@ -1,0 +1,66 @@
+/* ViralMint glass-glow re-skin for the embedded HyperFrames Studio.
+   Injected into dist/studio/index.html by studio_service. Re-skin, not a
+   redesign. Colors mirror frontend/src/theme.js exactly:
+     primary  #c96442 (terracotta)   darks  #141210 / #1a1816 / #1e1c1a
+     divider  rgba(255,255,255,.07)   font   Inter + system
+   Studio accent is the hardcoded Tailwind color `studio-accent` (#3ce6ac)
+   across a finite, enumerable class set — overridden deterministically below. */
+
+*, *::before, *::after {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif !important;
+}
+
+/* ── Accent: HeyGen emerald (#3ce6ac) → ViralMint terracotta (#c96442) ── */
+.bg-studio-accent      { background-color: #c96442   !important; }
+.bg-studio-accent\/5   { background-color: #c964420d !important; }
+.bg-studio-accent\/10  { background-color: #c964421a !important; }
+.bg-studio-accent\/15  { background-color: #c9644226 !important; }
+.bg-studio-accent\/20  { background-color: #c9644233 !important; }
+.bg-studio-accent\/60  { background-color: #c9644299 !important; }
+.bg-studio-accent\/80  { background-color: #c96442cc !important; }
+.bg-studio-accent\/90  { background-color: #c96442e6 !important; }
+.text-studio-accent    { color: #d57a55   !important; }  /* lifted for contrast on dark */
+.text-studio-accent\/50{ color: #d57a5580 !important; }
+.text-studio-accent\/80{ color: #d57a55cc !important; }
+.border-studio-accent     { border-color: #c96442   !important; }
+.border-studio-accent\/25 { border-color: #c9644240 !important; }
+.border-studio-accent\/30 { border-color: #c964424d !important; }
+.border-studio-accent\/50 { border-color: #c9644280 !important; }
+.border-studio-accent\/60 { border-color: #c9644299 !important; }
+.border-studio-accent\/70 { border-color: #c96442b3 !important; }
+.border-studio-accent\/80 { border-color: #c96442cc !important; }
+.ring-studio-accent  { --tw-ring-color: #c96442 !important; }
+.fill-studio-accent  { fill:   #c96442 !important; }
+.stroke-studio-accent{ stroke: #c96442 !important; }
+
+/* Solid accent buttons get ViralMint's terracotta gradient + soft glow. */
+button.bg-studio-accent, a.bg-studio-accent {
+  background-image: linear-gradient(135deg, #c96442, #e88a5a) !important;
+  box-shadow: 0 6px 22px rgba(201, 100, 66, 0.32) !important;
+}
+
+/* ── Chrome: cool near-black → warm ViralMint dark (linen-paper) ── */
+html, body, #root { background: #141210 !important; }
+.bg-black, .bg-neutral-950, .bg-zinc-950, .bg-neutral-900, .bg-zinc-900 { background-color: #141210 !important; }
+.bg-neutral-850 { background-color: #1a1816 !important; }
+.bg-neutral-800, .bg-zinc-800, .bg-neutral-800\/50 { background-color: #1e1c1a !important; }
+
+/* Borders → ViralMint divider. */
+.border-neutral-800, .border-zinc-800, .border-neutral-800\/50, .border-neutral-700,
+.border-neutral-700\/50, .border-white\/10, .border-white\/5 {
+  border-color: rgba(255, 255, 255, 0.07) !important;
+}
+
+/* Text neutrals → ViralMint text tones (subtle warmth). */
+.text-neutral-400, .text-zinc-400 { color: #9c9690 !important; }
+.text-neutral-300, .text-zinc-300 { color: #c7c1ba !important; }
+
+/* Selection in the warm accent. */
+::selection { background: #c9644259; }
+
+/* Widen the left Code/Comps/Assets/Catalog panel — the studio hardcodes it to
+   240px inline, which is cramped for the file list + tabs. Double it. min-width
+   beats the smaller inline width via !important and still lets the user drag the
+   panel even wider. The .border-r distinguishes this left panel from the other
+   bg-neutral-950 surfaces (timeline / main content). */
+.flex.flex-col.h-full.bg-neutral-950.border-r { min-width: 440px !important; }

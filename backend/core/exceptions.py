@@ -104,9 +104,24 @@ class HyperFramesNotInstalledError(MotionGraphicsError):
     """The on-demand HyperFrames plugin is missing.
 
     Raised by the install gate every motion endpoint pre-flights, so the caller
-    can answer with a "install it from Settings" pointer instead of a stack
+    can answer with an "install it from Settings" pointer instead of a stack
     trace. Distinct from MotionRenderError: nothing was attempted.
+
+    ENVELOPE is what the API layer returns instead of a 500 — a structured
+    answer the UI keys on to offer the install, rather than an error string
+    someone has to read to understand. It is a normal 200 on purpose: "this
+    feature needs a one-click install" is a state, not a failure.
     """
+
+    ENVELOPE = {
+        "ok": False,
+        "error_code": "hyperframes_not_installed",
+        "message": (
+            "Motion Graphics isn't installed. "
+            "Install it from Settings → Add-ons."
+        ),
+        "action_url": "/settings#motion-graphics",
+    }
 
 
 class MotionRenderError(MotionGraphicsError):
