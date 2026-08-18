@@ -372,3 +372,79 @@ async def _dispatch_studio_render(aspect_ratio: str, title: Optional[str],
     dispatch(run_studio_render(job_id=job.id, aspect_ratio=aspect_ratio,
                                title=title, supersample=(quality == "high")))
     return job.id
+
+
+class MotionComposeRequest(BaseModel):
+    """A brief for the AI to turn into a composition.
+
+    `instruction` marks a refinement of what is already live rather than a
+    fresh piece — it reaches the model as a requested change, so "make the
+    headline bigger" does not produce an unrelated video.
+    """
+    topic: Optional[str] = None
+    instruction: Optional[str] = None
+    headline: Optional[str] = None
+    style: Optional[str] = None
+    accent: str = "#ffd60a"
+    aspect_ratio: str = "9:16"
+    duration_seconds: int = 6
+
+
+@router.post("/motion/studio/author")
+async def motion_studio_author(body: MotionComposeRequest):
+    """Have the AI write a composition into the studio. → {job_id}.
+
+    Authoring is a background job, not a request: a real model call plus the
+    engine's own verification pass takes long enough that holding an HTTP
+    connection open for it would time out somewhere unhelpful.
+    """
+    gate = _studio_gate()
+    if gate:
+        return gate
+    from backend.agents.generator_motion import ASPECT_DIMS, MOTION_DURATIONS
+    if body.aspect_ratio not in ASPECT_DIMS:
+        raise HTTPException(status_code=400,
+                            detail=f"Unsupported aspect {body.aspect_ratio}")
+    if not (body.topic or "").strip() and not (body.instruction or "").strip():
+        raise HTTPException(status_code=400,
+                            detail="Describe the video you want, or the change to make")
+
+    from backend.agents.job_helper import create_job
+    from backend.core.task_runner import dispatch, run_studio_author
+    # Clamp rather than reject: an out-of-range length from an older client
+    # should still make a video.
+    duration = min(MOTION_DURATIONS, key=lambda d: abs(d - (body.duration_seconds or 6)))
+    brief = {
+        "topic": body.topic, "instruction": body.instruction,
+        "headline": body.headline, "style": body.style, "accent": body.accent,
+        "aspect_ratio": body.aspect_ratio, "duration_seconds": duration,
+        "assets": _staged_assets(),
+    }
+    job = await create_job("motion_compose", "local",
+                           {"topic": (body.topic or body.instruction or "")[:200]})
+    dispatch(run_studio_author(job_id=job.id, brief=brief))
+    return {"job_id": job.id}
+
+
+def _staged_assets() -> list:
+    """Whatever the user has staged into the project, for the brief's ASSETS
+    list. Filenames go to the model VERBATIM: a tidied-up name is a name that
+    does not exist on disk, and the render aborts on it."""
+    from backend.services.studio_service import StudioService
+    out = []
+    assets = StudioService.project_dir() / "assets"
+    if not assets.is_dir():
+        return out
+    for f in sorted(assets.iterdir()):
+        if not f.is_file() or f.name == "gsap.min.js":
+            continue
+        ext = f.suffix.lower()
+        kind = next((k for k, exts in StudioService._ASSET_EXTS.items() if ext in exts), None)
+        if not kind:
+            continue
+        entry = {"file": f.name, "type": kind}
+        if kind in ("video", "audio"):
+            from backend.services.video_utils import probe_duration
+            entry["duration"] = round(probe_duration(f, 0.0), 1) or None
+        out.append(entry)
+    return out[:6]

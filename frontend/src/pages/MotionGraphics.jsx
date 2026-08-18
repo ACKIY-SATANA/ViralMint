@@ -7,8 +7,10 @@ import {
 } from "@mui/material"
 import MovieFilterIcon from "@mui/icons-material/MovieFilterOutlined"
 import VideoLibraryIcon from "@mui/icons-material/VideoLibraryOutlined"
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesomeOutlined"
 import PageHero from "../components/PageHero"
 import MotionInstallGate from "../components/MotionInstallGate"
+import MotionComposePanel from "../components/motion/MotionComposePanel"
 import http from "../api/http"
 import useAppStore from "../store/appStore"
 import useDocumentTitle from "../hooks/useDocumentTitle"
@@ -39,6 +41,8 @@ export default function MotionGraphics() {
   const [starting, setStarting] = useState(true)
   const [startError, setStartError] = useState(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const [panelOpen, setPanelOpen] = useState(false)  // the studio gets the full width until asked
+  const [aspect, setAspect] = useState("9:16")
 
   useEffect(() => {
     let cancelled = false
@@ -87,6 +91,17 @@ export default function MotionGraphics() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studioUrl])
 
+  const restartStudio = useCallback(async () => {
+    // A composition written behind the studio's back does not reliably reach a
+    // running preview client — it can keep showing the previous one. A clean
+    // restart plus an iframe remount is the only reliable way to guarantee the
+    // user sees what was just made.
+    try {
+      await http.post(`/api/generate/motion/studio/start?mode=${mode}&restart=true`)
+    } catch { /* the remount below still reloads the running server */ }
+    setReloadKey((k) => k + 1)
+  }, [mode])
+
   const hero = (
     <PageHero
       icon={<MovieFilterIcon sx={{ fontSize: 22 }} />}
@@ -95,10 +110,16 @@ export default function MotionGraphics() {
       dense
       actions={
         installed ? (
-          <Button size="small" variant="outlined" startIcon={<VideoLibraryIcon />}
-            onClick={() => navigate("/videos")}>
-            Library
-          </Button>
+          <>
+            <Button size="small" variant="outlined" startIcon={<VideoLibraryIcon />}
+              onClick={() => navigate("/videos")}>
+              Library
+            </Button>
+            <Button size="small" variant={panelOpen ? "outlined" : "contained"}
+              startIcon={<AutoAwesomeIcon />} onClick={() => setPanelOpen((v) => !v)}>
+              AI Compose
+            </Button>
+          </>
         ) : null
       }
     />
@@ -141,6 +162,36 @@ export default function MotionGraphics() {
         <iframe key={reloadKey} src={studioUrl} title="Motion Studio"
           style={{ width: "100%", height: "100%", border: 0, display: "block" }} />
       )}
+
+      {/* AI Compose — a drawer that stays MOUNTED so an in-flight compose (and
+          its poll) survives closing the panel; it just slides off-canvas.
+
+          `visibility: hidden` once it has finished sliding out is doing real
+          work, not belt-and-braces: a translated element is still in the tab
+          order and the accessibility tree, so a keyboard user would tab into a
+          panel nobody can see. The transition delay lets the slide finish
+          before it disappears, and `visibility` is inherited-but-overridable,
+          so this costs nothing on the way back in. */}
+      <Box
+        aria-hidden={!panelOpen}
+        sx={{
+          position: "absolute", top: 0, right: 0, bottom: 0,
+          width: { xs: "100%", sm: 420 }, zIndex: 3,
+          transform: panelOpen ? "translateX(0)" : "translateX(102%)",
+          visibility: panelOpen ? "visible" : "hidden",
+          transition: panelOpen
+            ? "transform 280ms cubic-bezier(0.4, 0, 0.2, 1)"
+            : "transform 280ms cubic-bezier(0.4, 0, 0.2, 1), visibility 0s 280ms",
+          boxShadow: panelOpen ? (t) => t.shadows[8] : "none",
+        }}>
+        <MotionComposePanel
+          aspect={aspect}
+          setAspect={setAspect}
+          onNeedInstall={() => setInstalled(false)}
+          onComposed={restartStudio}
+          onClose={() => setPanelOpen(false)}
+        />
+      </Box>
     </Box>
   )
 }

@@ -78,6 +78,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   any other video. Every composition you replace is archived rather than
   overwritten, and a Comps list lets you clear the ones you no longer want.
 
+- **AI Compose.** Describe the video you want and your own AI model writes the
+  composition, which opens in the studio ready to edit. Attach an image, video
+  or audio file and it gets built in.
+
+  It uses whichever provider and model you configured, so quality follows your
+  choice rather than ours, and nothing about your brief leaves your machine
+  except the request to your own provider.
+
+  A composition that would not render is not handed to you broken. It is
+  checked against the renderer's contract — both a fast structural pass and the
+  engine's own verification — and anything wrong is fed back to the model to
+  fix. If it still cannot be made to render, the compose fails and the
+  composition you already had is left exactly as it was, rather than being
+  replaced by something that does not work.
+
 - **Video Download.** A new tool page for the thing the app could always do but
   never let you choose about: paste up to 20 links and pull the videos down
   from YouTube, TikTok, Bilibili, X and the 1,800+ other sites yt-dlp supports.

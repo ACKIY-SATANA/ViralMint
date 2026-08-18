@@ -1203,6 +1203,90 @@ async def run_news_save(
         await update_job_status(job_id, "failed", error_message=str(e))
 
 
+async def run_studio_author(job_id: str, brief: dict, user_id: str = "local", **kwargs):
+    """Author a composition with the user's own model and set it live.
+
+    The shape that matters is validate → repair → set live. A composition that
+    fails the render contract is handed its own errors and re-authored once; a
+    composition that fails twice is reported as failed rather than written over
+    whatever the user already had. Setting a broken file live would cost them
+    working work to gain nothing.
+    """
+    from backend.agents.job_helper import update_job_status, job_cancelled
+    from backend.core.ai_provider import get_ai_client
+    from backend.core.exceptions import JobCancelledError
+    from backend.core.ws_manager import ws_manager
+    from backend.services import composition_author as author
+    from backend.services.studio_service import StudioService
+
+    logger.info("TASK START studio-author | job=%s", job_id[:8])
+    try:
+        await update_job_status(job_id, "running", progress_pct=10,
+                                current_step="Designing the composition")
+        if await job_cancelled(job_id):
+            raise JobCancelledError("Compose cancelled before it started")
+
+        # BYOK: the composition is written by whichever provider and model the
+        # user configured, so quality tracks their choice rather than ours.
+        from sqlalchemy import select as _select
+        from backend.database import AsyncSessionLocal
+        from backend.models.user_settings import UserSettings
+        async with AsyncSessionLocal() as db:
+            row = await db.execute(
+                _select(UserSettings).where(UserSettings.user_id == user_id))
+            user_settings = row.scalar_one_or_none()
+        ai = get_ai_client(user_settings)
+
+        assets_dir = StudioService.project_dir() / "assets"
+        html = await author.author_composition(brief, ai)
+        issues = await StudioService._all_issues(html, assets_dir)
+
+        for attempt in range(author.MAX_REPAIR_PASSES):
+            if not issues:
+                break
+            if await job_cancelled(job_id):
+                raise JobCancelledError("Compose cancelled")
+            logger.info("studio-author | job=%s repairing %d issue(s)", job_id[:8], len(issues))
+            await update_job_status(job_id, "running", progress_pct=55,
+                                    current_step="Fixing what the renderer rejected")
+            html = await author.author_composition(
+                brief, ai, repair_error="\n".join(f"- {i}" for i in issues),
+                previous_html=html)
+            issues = await StudioService._all_issues(html, assets_dir)
+
+        if issues:
+            # Report the findings rather than a generic failure: they name the
+            # element and the fix, which is what makes a second attempt (with a
+            # different model, or a clearer brief) worth trying.
+            raise ValueError(
+                "The composition didn't satisfy the renderer:\n"
+                + "\n".join(f"- {i}" for i in issues[:6]))
+
+        await update_job_status(job_id, "running", progress_pct=90,
+                                current_step="Opening it in the studio")
+        result = await StudioService.import_composition(html)
+        await update_job_status(job_id, "success", progress_pct=100, current_step="Done",
+                                output_data={"file": result["file"],
+                                             "archived": result.get("archived")})
+        await ws_manager.send({
+            "type": "job_complete", "job_id": job_id, "job_type": "motion_compose",
+            "result": result,
+        }, user_id)
+        logger.info("TASK DONE  studio-author | job=%s", job_id[:8])
+    except Exception as e:
+        from backend.core.exceptions import JobCancelledError as _JC
+        from backend.agents.job_helper import update_job_status as _u
+        from backend.core.ws_manager import ws_manager as _ws
+        if isinstance(e, _JC):
+            logger.info("TASK CANCELLED studio-author | job=%s", job_id[:8])
+            await _u(job_id, "cancelled", current_step="Cancelled")
+            return
+        logger.error("TASK FAIL  studio-author | job=%s: %s", job_id[:8], e, exc_info=True)
+        await _u(job_id, "failed", error_message=str(e)[:500])
+        await _ws.send({"type": "job_failed", "job_id": job_id,
+                        "error": f"Compose failed: {str(e)[:200]}"}, user_id)
+
+
 async def run_studio_render(job_id: str, aspect_ratio: str = "9:16",
                             title: str | None = None,
                             supersample: bool | None = None, **kwargs):
