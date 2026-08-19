@@ -9,7 +9,8 @@ import { pluginRoutes } from "./plugins"
 // Route-level code splitting — only Chat is eagerly loaded (home page)
 import Chat from "./pages/Chat"
 const Settings = lazy(() => import("./pages/Settings"))
-const Videos = lazy(() => import("./pages/Videos"))
+const Library = lazy(() => import("./pages/Library"))
+const Scout = lazy(() => import("./pages/Scout"))
 const StockVideo = lazy(() => import("./pages/StockVideo"))
 const Channels = lazy(() => import("./pages/Channels"))
 const Messaging = lazy(() => import("./pages/Messaging"))
@@ -90,7 +91,13 @@ export default function App() {
             <Route path="/" element={<Layout />}>
               <Route index element={<Chat />} />
               <Route path="dashboard" element={<Navigate to="/videos" />} />
-              <Route path="videos" element={<Videos />} />
+              {/* `/videos` is the Library. The path is legacy and stays: it is
+                  bookmarked, and every ?tab= link the old page published still
+                  arrives here and is translated into the new filters. */}
+              <Route path="videos" element={<Library />} />
+              {/* Scout leads are not files you own, so they are not the
+                  Library. `/videos?tab=scout` redirects here. */}
+              <Route path="scout" element={<Scout />} />
               <Route path="stock" element={<StockVideo />} />
               <Route path="ai-video" element={<Navigate to="/stock" />} />
               <Route path="avatar" element={<Navigate to="/stock" />} />

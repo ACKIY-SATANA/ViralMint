@@ -24,14 +24,23 @@ function sameJobs(a, b) {
   return true
 }
 
-export default function useJobs(pollInterval = 5000) {
+/**
+ * @param {number} pollInterval  ms between ticks (backs off when idle)
+ * @param {number} pageSize      rows per fetch. The Activity panel states
+ *   counts and offers "clear all of these", so it asks for a WIDE window —
+ *   computing either over the default 20 would quietly lie the moment someone
+ *   had more than 20 jobs. It is a parameter rather than a per-call argument
+ *   because the interval tick refetches on its own, and a one-off wide fetch
+ *   would be overwritten by the next narrow one.
+ */
+export default function useJobs(pollInterval = 5000, pageSize = 20) {
   const jobs = useAppStore((s) => s.jobs)
   const setJobs = useAppStore((s) => s.setJobs)
   const [jobTotal, setJobTotal] = useState(0)
   const timerRef = useRef(null)
   const tickRef = useRef(0)
 
-  const fetchJobs = async (limit = 20, offset = 0) => {
+  const fetchJobs = async (limit = pageSize, offset = 0) => {
     try {
       const { data } = await http.get("/api/jobs", { params: { limit, offset } })
       const next = data.jobs || []

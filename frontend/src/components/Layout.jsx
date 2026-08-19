@@ -1,6 +1,10 @@
-import { useState } from "react"
-import { Outlet, NavLink, useLocation } from "react-router-dom"
+import { useEffect, useMemo, useState } from "react"
+import { Outlet, NavLink, useLocation, useNavigate } from "react-router-dom"
 import useWebSocket from "../hooks/useWebSocket"
+import useJobs from "../hooks/useJobs"
+import http from "../api/http"
+import ActivityPanel from "./librarynext/ActivityPanel"
+import { activityFromJob } from "./librarynext/assetModel"
 import {
   Box, Drawer, List, ListItemButton, ListItemIcon, ListItemText,
   Typography, Divider, IconButton, useMediaQuery, useTheme, Tooltip, Badge,
@@ -19,12 +23,14 @@ import ContentCutIcon from "@mui/icons-material/ContentCutOutlined"
 import MovieFilterIcon from "@mui/icons-material/MovieFilterOutlined"
 import BuildIcon from "@mui/icons-material/BuildOutlined"
 import SettingsIcon from "@mui/icons-material/SettingsOutlined"
+import TravelExploreIcon from "@mui/icons-material/TravelExploreOutlined"
 
 const DRAWER_WIDTH = 240
 const COLLAPSED_WIDTH = 64
 
 const navItems = [
   { to: "/",          icon: <ChatIcon />,             label: "Chat" },
+  { to: "/scout",     icon: <TravelExploreIcon />,    label: "Scout" },
   { to: "/channels",  icon: <SensorsIcon />,          label: "My Channels" },
   { to: "/clips",     icon: <ContentCutIcon />,       label: "Clip Studio" },
   { to: "/videos",    icon: <VideoLibraryIcon />,     label: "Library" },
@@ -43,12 +49,37 @@ const bottomItems = [
 export default function Layout() {
   useWebSocket()  // Global WS connection — active on all pages
   const location = useLocation()
+  const navigate = useNavigate()
   const theme = useTheme()
   const isNarrow = useMediaQuery(theme.breakpoints.down("md"))
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const activeJobs = useAppStore(s => s.activeJobs)
   const runningJobCount = Object.values(activeJobs).filter(j => j.status === "running").length
+  // The Activity panel is mounted HERE, not on a page: jobs start from the
+  // Clipper, Stock Video, a tool page and the Motion studio alike, and it used
+  // to be a Library tab reachable from exactly one route.
+  const activityOpen = useAppStore(s => s.activityOpen)
+  const openActivity = useAppStore(s => s.openActivity)
+  const closeActivity = useAppStore(s => s.closeActivity)
+  const showSnackbar = useAppStore(s => s.showSnackbar)
+  const removeJob = useAppStore(s => s.removeJob)
+  // ONE job poll for the whole app — pages read `jobs` from the store. A second
+  // useJobs() instance would double the polling for the same rows.
+  //
+  // 200, not the default 20: the panel states counts and offers "clear all of
+  // these", and computing either over a 20-row window would quietly lie the
+  // moment a user had more.
+  const { jobs: allJobs, jobTotal, fetchJobs } = useJobs(5000, 200)
+  const activity = useMemo(() => allJobs.map(activityFromJob), [allJobs])
+  // The poll backs off when nothing is in flight, but the WebSocket knows about
+  // a new job immediately (job_started → activeJobs). Without this nudge, a run
+  // you just started could be missing from Activity long enough to read as
+  // never having started.
+  const wsJobCount = Object.keys(activeJobs).length
+  useEffect(() => { fetchJobs() }, [wsJobCount])  // eslint-disable-line react-hooks/exhaustive-deps
+  // Opening the panel is a question — answer it with fresh data.
+  useEffect(() => { if (activityOpen) fetchJobs() }, [activityOpen])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const drawerWidth = collapsed && !isNarrow ? COLLAPSED_WIDTH : DRAWER_WIDTH
 
@@ -170,6 +201,31 @@ export default function Layout() {
         {navItems.map(renderNavItem)}
       </List>
 
+      {/* Work in flight, from any route. The job log used to be a Library tab,
+          so the only way to answer "is my clip still rendering?" was to
+          navigate away from whatever you were doing. */}
+      {runningJobCount > 0 && (
+        <Box sx={{ px: collapsed && !isNarrow ? 0.75 : 1.5, pb: 1 }}>
+          <Tooltip title="Show activity" placement="right" arrow>
+            <ListItemButton onClick={openActivity} aria-label="Show activity"
+              sx={{
+                borderRadius: 2, py: 0.75,
+                justifyContent: collapsed && !isNarrow ? "center" : "flex-start",
+                border: 1, borderColor: "divider", bgcolor: "action.hover",
+              }}>
+              <Badge color="warning" variant="dot" sx={{ mr: collapsed && !isNarrow ? 0 : 1.25 }}>
+                <BuildIcon sx={{ fontSize: 18 }} />
+              </Badge>
+              {!(collapsed && !isNarrow) && (
+                <Typography sx={{ fontSize: "0.78rem", fontWeight: 600 }}>
+                  {runningJobCount} job{runningJobCount === 1 ? "" : "s"} running
+                </Typography>
+              )}
+            </ListItemButton>
+          </Tooltip>
+        </Box>
+      )}
+
       <Divider sx={{ mx: collapsed && !isNarrow ? 1 : 2, mb: 0.5, opacity: 0.5 }} />
 
       <List sx={{ px: collapsed && !isNarrow ? 0.75 : 1.5, pb: 1 }}>
@@ -266,6 +322,73 @@ export default function Layout() {
           <Outlet />
         </Box>
       </Box>
+
+      {/* App-wide job log. Cancel and clear act for real; "open what it made"
+          hands the key to the Library, which knows how to show it. */}
+      <ActivityPanel
+        open={activityOpen}
+        onClose={closeActivity}
+        jobs={activity}
+        total={jobTotal}
+        onOpenResult={(key) => {
+          closeActivity()
+          navigate(`/videos?open=${encodeURIComponent(key)}`)
+        }}
+        onCancel={async (jobId) => {
+          try {
+            await http.delete(`/api/jobs/${jobId}`)
+            removeJob(jobId)
+            showSnackbar("Job cancelled", "info")
+          } catch (e) {
+            showSnackbar(e.response?.data?.detail || "Could not cancel that job", "error")
+          } finally {
+            fetchJobs()
+          }
+        }}
+        onDelete={async (job) => {
+          // DELETE /api/jobs/{id} CANCELS a live job and DELETES a terminal one,
+          // by design, so a running render is never destroyed by a stray click.
+          // Removing a running row therefore takes two calls.
+          try {
+            await http.delete(`/api/jobs/${job.id}`)
+            if (job.state === "running") {
+              removeJob(job.id)
+              // The second call removes the now-cancelled row. A 409 means it
+              // backs a Library file — surface that rather than swallow it.
+              await http.delete(`/api/jobs/${job.id}`).catch(() => {})
+              showSnackbar("Job cancelled and removed", "info")
+            } else {
+              showSnackbar("Job removed", "info")
+            }
+          } catch (e) {
+            showSnackbar(e.response?.data?.detail || "Could not remove that job", "error")
+          } finally {
+            fetchJobs()
+          }
+        }}
+        onClearSection={async (ids, what) => {
+          if (!ids?.length) return
+          try {
+            // The server KEEPS rows that are Library items — clearing the log
+            // must not delete files. Report what actually happened rather than
+            // the count we asked for, or the toast lies.
+            const { data } = await http.post("/api/jobs/bulk-delete", { job_ids: ids })
+            const gone = data?.deleted ?? ids.length
+            const kept = data?.kept_library ?? 0
+            showSnackbar(
+              gone === 0 && kept > 0
+                ? `Nothing to clear — all ${kept} are files in your Library`
+                : `Cleared ${gone} ${what} job${gone === 1 ? "" : "s"}` +
+                  (kept > 0 ? ` · kept ${kept} still in your Library` : ""),
+              "info",
+            )
+          } catch (e) {
+            showSnackbar(e.response?.data?.detail || "Could not clear those jobs", "error")
+          } finally {
+            fetchJobs()
+          }
+        }}
+      />
     </Box>
   )
 }

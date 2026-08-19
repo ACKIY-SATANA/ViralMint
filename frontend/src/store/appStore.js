@@ -76,6 +76,15 @@ const useAppStore = create((set, get) => ({
   jobs: [],
   setJobs: (j) => set({ jobs: j }),
 
+  // ── Activity panel ────────────────────────────────────────────────────────
+  // The job log lives in a panel any surface can open, because jobs start from
+  // Stock Video, a tool page, the Clipper and the Motion studio alike — it used
+  // to be a Library tab, reachable from exactly one route. The sidebar's
+  // running-jobs pill and the Library's Activity button both flip this.
+  activityOpen: false,
+  openActivity: () => set({ activityOpen: true }),
+  closeActivity: () => set({ activityOpen: false }),
+
   // Active jobs — real-time via WebSocket, persists across page nav
   // { [jobId]: { jobId, jobType, status, percent, step, message, startedAt } }
   activeJobs: {},
