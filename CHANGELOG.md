@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- **The Library shows everything you own.** Every tool wrote its output to disk
+  and none of it appeared anywhere: captions, reframes, merges, trims, crops,
+  GIFs, subtitle files, chapter lists — twenty tools, invisible the moment the
+  job finished, reachable only if you remembered where the download button put
+  the file. The Library is now one faceted view over four stores at once (your
+  renders, your downloads, every tool output, and the background-music
+  directory).
+- **Two questions, two controls.** The page used to tab on a mix of them:
+  Scout / Downloaded / Generated asks where a file came FROM, while asking
+  whether something is audio asks what it IS. Anything with a true answer to
+  both — a downloaded mp3, a voice-over, an enhanced podcast — had to be filed
+  under one and was lost from the other. Media tabs now say what a file is and
+  "From" chips say where it came from, so nothing has to choose. Colour means
+  provenance and nothing else, and every tile states its origin in words too.
+- **By source.** A second view groups each download with everything you made
+  from it — the clips you cut, the captioned version of one of those clips —
+  so a file and its descendants are finally visible together.
+- **Activity, from any page.** The job log was a Library tab, so the only way
+  to answer "is my clip still rendering?" was to navigate away from whatever
+  you were doing. It is now a panel any page can open, with a running-jobs
+  button in the sidebar. Work in flight shows as a tile in the grid where its
+  output will land.
+- **Scout has its own page.** A trending video is a lead, not a file you own —
+  no bytes on disk, nothing to play or edit — and it grows fast enough to dwarf
+  the library it was filed inside. Old `?tab=` links still work and are
+  translated into the new filters on arrival.
+- **Posters for edited videos.** Nothing in the tool pipeline ever made a
+  thumbnail, so a captioned cut had no image to show. One is extracted on first
+  view and cached; audio and text draw a waveform or a snippet rather than a
+  grey block.
+
+### Fixed
+- **Clearing the activity log no longer deletes your files.** A successful tool
+  run is now the Library item for the file it produced, which made every path
+  that removed a job row a path that could make a video disappear while its
+  bytes sat on disk forever. Removing such a row is refused with a message
+  pointing at the door that removes the file too, and "Clear finished" keeps
+  those rows and says how many it kept.
+- **The jobs and scout tables are bounded.** Neither ever had a row removed.
+  Jobs are now kept for 30 days (2,000 row ceiling) and scout results for 60
+  (5,000), swept in the background at startup. Both are defined by what a row
+  IS rather than its age: a job backing a file on disk is kept at any age, and
+  a scout lead a download still points back at is kept because that is where
+  the source URL lives.
+- **Relative times were wrong by your UTC offset.** Timestamps are stored as
+  naive UTC and were being read as local, so at UTC+2 a job that started five
+  minutes ago read as "2h ago".
+
 ### Security
 - **Batch download refuses non-http links.** `POST /api/downloaded/batch-download`
   accepted any string as a URL and handed it to yt-dlp, so a `file:///etc/passwd`
