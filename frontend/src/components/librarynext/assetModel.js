@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2025-2026 ViralMint Contributors
 /**
  * assetModel — the Library taxonomy, as data. The frontend TWIN of
  * backend/services/library_taxonomy.py: the Library page, the pending tiles,

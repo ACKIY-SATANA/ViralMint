@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2025-2026 ViralMint Contributors
 /**
  * SourceTree — the "By source" view (prototype).
  *
