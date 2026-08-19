@@ -2,7 +2,7 @@
 # Copyright (c) 2025-2026 ViralMint Contributors
 """REST /api/jobs — job CRUD + status."""
 import logging
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy import select
@@ -118,17 +118,29 @@ async def delete_job(job_id: str):
         j = result.scalar_one_or_none()
 
         if not j:
-            from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="Job not found")
 
         if j.status in ("running", "pending"):
             j.status = "cancelled"
             await db.commit()
             return {"message": "Job cancelled"}
-        else:
-            await db.delete(j)
-            await db.commit()
-            return {"message": "Job deleted"}
+
+        # A successful tool run is not a log entry — it IS the Library item for
+        # the file it wrote, and the asset endpoint resolves that file BY THIS
+        # ROW's id. Deleting it here would take the user's captioned cut off
+        # every surface while the bytes sat on disk forever. Point at the door
+        # that removes both.
+        from backend.services.job_retention import is_library_item
+        if is_library_item(j):
+            raise HTTPException(
+                status_code=409,
+                detail=("This job produced a file in your Library. Delete it from "
+                        "there (that removes the file too)."),
+            )
+
+        await db.delete(j)
+        await db.commit()
+        return {"message": "Job deleted"}
 
 
 class BulkDeleteRequest(BaseModel):
@@ -137,9 +149,18 @@ class BulkDeleteRequest(BaseModel):
 
 @router.post("/jobs/bulk-delete")
 async def bulk_delete_jobs(body: BulkDeleteRequest):
-    """Delete multiple completed/failed jobs at once."""
+    """Delete multiple completed/failed jobs at once.
+
+    Rows that back a file in the Library are KEPT and counted separately.
+    "Clear finished" is a request to tidy the activity log, and it must never
+    be a way to delete the user's videos — which is what it would be now that a
+    successful tool run is the Library item for its own output.
+    """
+    from backend.services.job_retention import is_library_item
+
     deleted = 0
     cancelled = 0
+    kept_library = 0
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Job).where(Job.id.in_(body.job_ids)))
         jobs = result.scalars().all()
@@ -147,8 +168,10 @@ async def bulk_delete_jobs(body: BulkDeleteRequest):
             if j.status in ("running", "pending"):
                 j.status = "cancelled"
                 cancelled += 1
+            elif is_library_item(j):
+                kept_library += 1
             else:
                 await db.delete(j)
                 deleted += 1
         await db.commit()
-    return {"deleted": deleted, "cancelled": cancelled}
+    return {"deleted": deleted, "cancelled": cancelled, "kept_library": kept_library}

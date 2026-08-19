@@ -114,6 +114,34 @@ async def lifespan(app: FastAPI):
         import logging
         logging.getLogger(__name__).warning(f"Orphan clip purge failed to start: {e}")
 
+    # Bound the two tables that only ever grew: `jobs` (every scout, download,
+    # analyze and tool run adds a row) and `scout_results` (up to 50 per niche
+    # per platform per run). There is no periodic scheduler here, and these are
+    # not urgent — a table one boot too large is harmless — so boot is a fine
+    # cadence. Background + best-effort: startup must never wait on it.
+    #
+    # ⚠️ Both sweeps are defined by what a row IS, not by age alone: a
+    # successful tool job is the Library item for its file, and a scout row a
+    # download points back at is still load-bearing. Neither is ever deleted.
+    try:
+        from backend.core.task_runner import spawn_background
+
+        async def _sweep_retention():
+            import logging
+            from backend.database import AsyncSessionLocal
+            from backend.services import job_retention
+            try:
+                async with AsyncSessionLocal() as db:
+                    await job_retention.sweep(db)
+                    await job_retention.sweep_scout(db)
+            except Exception as exc:
+                logging.getLogger(__name__).warning(f"Retention sweep failed: {exc}")
+
+        spawn_background(_sweep_retention())
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Retention sweep failed to start: {e}")
+
     # Ensure SFX directory + generated files exist
     try:
         from backend.services.sfx_service import ensure_sfx_dir
