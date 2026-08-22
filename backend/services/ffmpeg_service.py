@@ -1015,3 +1015,216 @@ async def has_audio_stream(media_path: Path) -> bool:
     out of range" from deep inside its decoder.
     """
     return await asyncio.to_thread(has_audio_stream_sync, media_path)
+
+
+async def extract_frame_at(
+    video_path: Path,
+    timestamp: float,
+    output_path: Path,
+    quality: int = 2,
+    scale_width: int | None = None,
+) -> Path | None:
+    """Extract a single frame at an exact timestamp.
+
+    Generalised counterpart to `extract_thumbnail` — the caller owns the
+    output path, so it can write into a cache keyed however it likes instead
+    of bouncing through the thumbnails directory under a derived name.
+
+    Args:
+        video_path: Source file. Must exist on disk.
+        timestamp: Seconds into the video. Out-of-range values are clamped by
+            ffmpeg's own seek; the extracted frame is the closest one
+            at-or-before.
+        output_path: Where to write the JPEG. Parent dir is created.
+        quality: -q:v value (1=best, 31=worst). 2 matches extract_thumbnail.
+        scale_width: optional output width in px, aspect preserved. Callers
+            that only ever display a small frame (the Clipper bench's
+            132px-wide IN/OUT panes) should pass it — encoding a full 1080p
+            JPEG per drag settle is bytes and CPU nobody sees.
+
+    Returns:
+        The output path on success, None on failure (logged). An empty file
+        counts as a failure: a 0-byte JPEG renders as a broken image, which
+        is worse than no image at all.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _extract():
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(max(0.0, float(timestamp))),  # -ss BEFORE -i = fast seek
+            "-i", str(video_path),
+            "-vframes", "1",
+            "-q:v", str(quality),
+        ]
+        if scale_width:
+            # -2 keeps the height even and the aspect intact.
+            cmd += ["-vf", f"scale={int(scale_width)}:-2"]
+        cmd.append(str(output_path))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            logger.warning(
+                "Frame extract failed at t=%.2fs for %s: %s",
+                timestamp, video_path.name, result.stderr[:200],
+            )
+            return None
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            logger.warning("Frame extract produced an empty file at t=%.2fs", timestamp)
+            output_path.unlink(missing_ok=True)
+            return None
+        return output_path
+
+    return await asyncio.to_thread(_extract)
+
+
+# Filmstrip sampling bounds — see extract_filmstrip.
+MIN_CELL_SEC = 0.2       # densest useful sampling; also caps the ffmpeg spawns
+TAIL_MARGIN_SEC = 0.25   # keep the last seek inside the last decodable frame
+
+
+async def extract_filmstrip(
+    video_path: Path,
+    output_path: Path,
+    count: int = 32,
+    tile_height: int = 64,
+    duration: float | None = None,
+    concurrency: int = 6,
+) -> Path | None:
+    """Render a horizontal contact sheet: `count` frames tiled 1 row deep.
+
+    This is the scrubbing background behind Clipper's cutting bench — one
+    image request instead of `count` of them, so a wide timeline paints in a
+    single paint.
+
+    Why per-frame fast seek and not `-vf fps=…`: an fps filter decodes the
+    ENTIRE source (minutes on a one-hour podcast, which is exactly the input
+    Clipper exists for), and its frame count drifts with rounding — a short
+    tile flushes padded with black. Seeking to each timestamp with `-ss`
+    before `-i` is O(1) per frame and lands on exact times, so cell i
+    genuinely means `duration * (i + 0.5) / count`. The tiling pass then
+    reads an image sequence, where the input count is known exactly and the
+    tile is always complete.
+
+    Args:
+        video_path: Source file. Must exist.
+        output_path: Where the JPEG strip lands. Parent dir is created.
+        count: Number of cells (clamped 4..96).
+        tile_height: Cell height in px (clamped 24..160). Width follows the
+            source aspect, rounded even for the encoder.
+        duration: Source duration if the caller already knows it; probed when
+            omitted.
+        concurrency: Parallel ffmpeg seeks. 6 keeps a long source fast
+            without saturating a laptop's cores.
+
+    Returns:
+        `output_path` on success, None on failure (logged). A partial
+        extraction is a failure: a strip with holes would mislead the user
+        about where they are in the video.
+    """
+    if not video_path.exists():
+        return None
+
+    count = max(4, min(int(count), 96))
+    tile_height = max(24, min(int(tile_height), 160))
+
+    if duration is None or duration <= 0:
+        duration = await asyncio.to_thread(probe_duration, video_path, 0.0)
+    if not duration or duration <= 0:
+        logger.warning("filmstrip: could not probe duration for %s", video_path.name)
+        return None
+
+    # Never sample denser than MIN_CELL_SEC. A wide timeline over a 9-second
+    # TikTok would otherwise ask for cells 60ms apart — dozens of ffmpeg
+    # spawns for frames that repeat, and (before the tail clamp below) a
+    # guaranteed failure on the last one.
+    count = min(count, max(4, int(duration / MIN_CELL_SEC)))
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    work = settings.TMP_DIR / f"strip_{uuid4().hex[:12]}"
+    work.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # Cell centres, so the first frame (often a black fade-in) isn't the
+        # one that represents the opening.
+        #
+        # The tail clamp is load-bearing. A container's reported duration runs
+        # to the END of the last frame, so the final cell's centre —
+        # duration × (count-0.5)/count — can sit past the last frame's
+        # presentation time, and `-ss` there decodes nothing. One missing
+        # frame fails the whole strip, so a 6s source asked for 32 cells
+        # produced no timeline at all. Clamping the SEEK (not the cell's
+        # nominal time) keeps every cell's position on the timeline honest and
+        # costs at most a slightly-early final thumbnail.
+        seek_ceiling = max(0.0, duration - TAIL_MARGIN_SEC)
+        stamps = [min(duration * (i + 0.5) / count, seek_ceiling) for i in range(count)]
+        sem = asyncio.Semaphore(max(1, int(concurrency)))
+
+        async def _one(i: int, ts: float):
+            out = work / f"f{i + 1:03d}.jpg"
+            async with sem:
+                got = await extract_frame_at(
+                    video_path=video_path, timestamp=ts, output_path=out,
+                    quality=6,  # strip cells are ~100px wide; q6 halves the bytes
+                )
+                if got:
+                    return got
+                # A fixed ceiling can't know the source's frame interval — a
+                # 1fps video's last frame is a whole second before the end.
+                # Step back once rather than losing the strip.
+                retry = max(0.0, ts - max(1.0, duration * 0.02))
+                if retry >= ts:
+                    return None
+                return await extract_frame_at(
+                    video_path=video_path, timestamp=retry, output_path=out, quality=6,
+                )
+
+        results = await asyncio.gather(
+            *(_one(i, ts) for i, ts in enumerate(stamps)),
+            return_exceptions=True,
+        )
+        ok = [r for r in results if r and not isinstance(r, Exception)]
+        if len(ok) < count:
+            logger.warning(
+                "filmstrip: only %d/%d frames extracted from %s — no strip",
+                len(ok), count, video_path.name,
+            )
+            return None
+
+        def _tile():
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "image2",
+                "-start_number", "1",
+                "-i", str(work / "f%03d.jpg"),
+                # scale=-2 keeps the width even (some JPEG encoders reject odd
+                # chroma widths) and preserves aspect, so a cell is never
+                # squashed.
+                "-vf", f"scale=-2:{tile_height},tile={count}x1",
+                "-frames:v", "1",
+                "-q:v", "5",
+                str(output_path),
+            ]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode != 0:
+                logger.warning("filmstrip tile failed for %s: %s",
+                               video_path.name, r.stderr[-300:])
+                return None
+            if not output_path.exists() or output_path.stat().st_size == 0:
+                logger.warning("filmstrip tile produced an empty file for %s",
+                               video_path.name)
+                output_path.unlink(missing_ok=True)
+                return None
+            return output_path
+
+        return await asyncio.to_thread(_tile)
+    finally:
+        # Clean up our own scratch explicitly — TMP_DIR holds yt-dlp's cookie
+        # jar and uploaded media, so it has no blanket purge to fall back on.
+        def _cleanup():
+            for p in work.glob("*"):
+                p.unlink(missing_ok=True)
+            work.rmdir()
+        try:
+            await asyncio.to_thread(_cleanup)
+        except OSError:
+            pass

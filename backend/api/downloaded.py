@@ -194,6 +194,32 @@ async def get_downloaded(video_id: str):
         }
 
 
+def drop_bench_caches(video_id: str) -> int:
+    """Remove the cutting bench's cached images for one source.
+
+    Two directories under THUMBNAILS_DIR, both keyed `<video_id>_<mtime>_…`:
+    `strips/` (the contact sheets behind the timeline) and `frames/` (the
+    IN/OUT previews, one per 0.1s bucket per width). Pure caches — deleting
+    them costs a rebuild; keeping them after the source is gone costs forever,
+    and nothing else knows they exist, because no DB row references them.
+
+    Returns the number of files removed. Never raises: failing to tidy a cache
+    must not fail the delete the user asked for.
+    """
+    removed = 0
+    for name in ("strips", "frames"):
+        d = settings.THUMBNAILS_DIR / name
+        if not d.is_dir():
+            continue
+        try:
+            for f in d.glob(f"{video_id}_*"):
+                f.unlink(missing_ok=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 @router.delete("/downloaded/{video_id}")
 async def delete_downloaded(video_id: str):
     """Delete a downloaded video — removes DB record and files from disk."""
@@ -224,6 +250,13 @@ async def delete_downloaded(video_id: str):
                         f.unlink()
                     except OSError:
                         pass
+
+        # The bench's caches are keyed by video id, so they are this row's
+        # files too — the same rule as the sidecar subtitles above. An editing
+        # session writes hundreds of `frames/` entries and nothing ever asked
+        # for them again once the source was gone. (The boot sweep is the
+        # backstop for what a crash leaves behind, not a licence to leak here.)
+        drop_bench_caches(video_id)
 
         # Delete associated scout result
         if video.scout_result_id:
@@ -1178,6 +1211,212 @@ async def get_downloaded_thumbnail(video_id: str):
         pass
 
     raise HTTPException(status_code=404, detail="Could not generate thumbnail")
+
+
+# ── Cutting-bench support (Clipper) ───────────────────────────────────
+# Three read-only sources the bench needs to SHOW a video instead of asking
+# the user to type timestamps at it: a scrubbing filmstrip, an exact frame,
+# and where the talking happens. All three are local and cache-friendly.
+
+_STRIP_COUNT_STEP = 4   # quantize the requested cell count so a resizing
+                        # window can't mint a cache entry per pixel.
+
+
+def _immutable_image(path: Path):
+    """A cached bench image. The key carries the source's mtime, which is what
+    makes `immutable` safe: a re-downloaded source writes a new file, which is
+    a new key, which is a new URL."""
+    return FileResponse(
+        path, media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+@router.get("/downloaded/{video_id}/filmstrip")
+async def get_downloaded_filmstrip(
+    video_id: str,
+    n: int = Query(32, ge=4, le=96),
+    h: int = Query(64, ge=24, le=160),
+):
+    """Serve a horizontal contact sheet of the source, `n` frames wide.
+
+    The Clipper bench stretches this behind its timeline, so cell i covers
+    `duration * i / n` .. `duration * (i+1) / n` — scene changes become
+    visible before the user drags anything.
+
+    `n` is quantized to a multiple of 4 and the result is cached on disk keyed
+    by (video id, file mtime, n, h).
+    """
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(DownloadedVideo).where(DownloadedVideo.id == video_id)
+        )
+        video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="Downloaded video not found")
+    if not video.video_path or not Path(video.video_path).exists():
+        raise HTTPException(status_code=404, detail="Video file not found on disk")
+
+    src = Path(video.video_path)
+    n = max(4, min(96, round(n / _STRIP_COUNT_STEP) * _STRIP_COUNT_STEP))
+    # Apply the density cap HERE too, so the cache key names the strip that
+    # actually gets built. extract_filmstrip clamps by duration internally
+    # (MIN_CELL_SEC), so on a short source n=96 and n=32 produce the same sheet
+    # — and were cached under two keys, each paying its own ffmpeg run. The
+    # client reads the true cell count off the DECODED image rather than off
+    # its own request, so a clamp here costs it nothing.
+    from backend.services.ffmpeg_service import MIN_CELL_SEC
+    if video.duration_seconds:
+        n = max(4, min(n, int(video.duration_seconds / MIN_CELL_SEC)))
+    try:
+        mtime = int(src.stat().st_mtime)
+    except OSError:
+        raise HTTPException(status_code=404, detail="Video file not readable")
+
+    strips = settings.THUMBNAILS_DIR / "strips"
+    out = strips / f"{video_id}_{mtime}_{n}x{h}.jpg"
+    if out.exists() and out.stat().st_size > 0:
+        return _immutable_image(out)
+
+    from backend.services.ffmpeg_service import extract_filmstrip
+    made = await extract_filmstrip(
+        video_path=src, output_path=out, count=n, tile_height=h,
+        duration=video.duration_seconds or None,
+    )
+    if not made:
+        raise HTTPException(status_code=422,
+                            detail="Could not build a filmstrip for this video")
+
+    # Drop strips built from a previous copy of this source. Same id, older
+    # mtime — nothing will ever request them again.
+    try:
+        for stale in strips.glob(f"{video_id}_*.jpg"):
+            if not stale.name.startswith(f"{video_id}_{mtime}_"):
+                stale.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    return _immutable_image(out)
+
+
+@router.get("/downloaded/{video_id}/frame")
+async def get_downloaded_frame(
+    video_id: str,
+    t: float = Query(0.0, ge=0.0),
+    w: int = Query(320, ge=64, le=960),
+):
+    """One frame of the source at `t` seconds — the bench's IN/OUT preview.
+
+    Why this exists instead of two more `<video>` elements seeked to the in and
+    out points, which is what the bench shipped with first: a media element
+    that is only ever seeked still behaves like a player. Each one holds a
+    range response open unconsumed, and a seek that comes back ERR_ABORTED
+    leaves the element in `seeking` forever — measured, the OUT preview updated
+    twice during a 700ms drag and then froze. An `<img>` has none of that
+    machinery.
+
+    Cached per 0.1s bucket per width, keyed by the source's mtime, so dragging
+    back over ground you have already covered is a disk read.
+    """
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(DownloadedVideo).where(DownloadedVideo.id == video_id)
+        )
+        video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="Downloaded video not found")
+    if not video.video_path or not Path(video.video_path).exists():
+        raise HTTPException(status_code=404, detail="Video file not found on disk")
+
+    src = Path(video.video_path)
+    try:
+        mtime = int(src.stat().st_mtime)
+    except OSError:
+        raise HTTPException(status_code=404, detail="Video file not readable")
+
+    duration = video.duration_seconds or 0
+    if duration:
+        # Never seek past the last decodable frame — the same tail rule the
+        # filmstrip learned the hard way.
+        t = min(float(t), max(0.0, duration - 0.25))
+    bucket = int(round(float(t) * 10))       # 0.1s granularity
+    w = int(round(w / 32) * 32)              # quantize so a resize reuses the cache
+
+    frames = settings.THUMBNAILS_DIR / "frames"
+    out = frames / f"{video_id}_{mtime}_{w}_{bucket:07d}.jpg"
+    if out.exists() and out.stat().st_size > 0:
+        return _immutable_image(out)
+
+    from backend.services.ffmpeg_service import extract_frame_at
+    got = await extract_frame_at(
+        video_path=src, timestamp=bucket / 10.0, output_path=out,
+        quality=4, scale_width=w,
+    )
+    if not got:
+        raise HTTPException(status_code=422, detail="Could not read a frame at that time")
+    return _immutable_image(out)
+
+
+@router.get("/downloaded/{video_id}/segments")
+async def get_downloaded_segments(video_id: str, limit: int = Query(1500, ge=1, le=5000)):
+    """Timed speech segments for the source, for the bench's speech lane.
+
+    The rows already carry `transcript_segments_json` (Whisper, written by the
+    downloader/analyzer) — it just had no way out over REST. Word-level timings
+    are stripped here: the lane draws blocks and snaps handles to phrase edges,
+    and the `words` array is the bulk of the payload.
+
+    Never 404s on a missing transcript — a source with no speech is a normal
+    case, and the bench degrades to a filmstrip-only timeline. Returns
+    `{duration, has_segments, truncated, segments: [{start, end, text}]}`.
+    """
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(DownloadedVideo).where(DownloadedVideo.id == video_id)
+        )
+        video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="Downloaded video not found")
+
+    raw = []
+    if video.transcript_segments_json:
+        try:
+            parsed = json.loads(video.transcript_segments_json)
+            if isinstance(parsed, list):
+                raw = parsed
+        except (json.JSONDecodeError, TypeError):
+            # Same posture as clip_extractor: a corrupt blob is a missing
+            # transcript, not an error page.
+            logger.warning("Corrupt transcript_segments_json for %s", video_id[:8])
+
+    segments = []
+    for seg in raw:
+        if not isinstance(seg, dict):
+            continue
+        try:
+            start = float(seg.get("start"))
+            end = float(seg.get("end"))
+        except (TypeError, ValueError):
+            continue
+        if not (end > start):
+            continue
+        segments.append({
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "text": (seg.get("text") or "").strip(),
+        })
+
+    segments.sort(key=lambda x: x["start"])
+    truncated = len(segments) > limit
+    if truncated:
+        segments = segments[:limit]
+
+    return {
+        "duration": video.duration_seconds or 0,
+        "has_segments": bool(segments),
+        "truncated": truncated,
+        "segments": segments,
+    }
 
 
 @router.get("/downloaded/{video_id}/stream")

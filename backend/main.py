@@ -114,6 +114,54 @@ async def lifespan(app: FastAPI):
         import logging
         logging.getLogger(__name__).warning(f"Orphan clip purge failed to start: {e}")
 
+    # Reclaim the cutting bench's image caches. `THUMBNAILS_DIR/frames/` holds
+    # one JPEG per (source, mtime, width, 0.1s bucket) and gets written on
+    # every drag settle — an editing session leaves hundreds; `strips/` holds
+    # one contact sheet per (source, mtime, cells, height). Neither is
+    # referenced by a DB row, both rebuild on demand in milliseconds warm, and
+    # deleting a source already drops its own entries. This is the backstop for
+    # what a crash — or a source deleted before this shipped — left behind.
+    #
+    # Age, not size, and boot rather than a timer: 30 days keeps a strip warm
+    # for a video someone comes back to next week, and there is no scheduler
+    # here to hang a daily job on. Background + best-effort.
+    try:
+        from backend.core.task_runner import spawn_background
+
+        async def _purge_bench_caches():
+            import asyncio as _asyncio
+            import logging
+            import time as _time
+
+            def _sweep() -> int:
+                cutoff = _time.time() - 30 * 86400
+                removed = 0
+                for name in ("frames", "strips"):
+                    root = settings.THUMBNAILS_DIR / name
+                    if not root.is_dir():
+                        continue
+                    for entry in root.iterdir():
+                        try:
+                            if entry.is_file() and entry.stat().st_mtime < cutoff:
+                                entry.unlink(missing_ok=True)
+                                removed += 1
+                        except OSError:
+                            continue
+                return removed
+
+            try:
+                n = await _asyncio.to_thread(_sweep)
+                if n:
+                    logging.getLogger(__name__).info(
+                        "Bench cache purge: removed %d cached image(s)", n)
+            except Exception as exc:
+                logging.getLogger(__name__).warning(f"Bench cache purge failed: {exc}")
+
+        spawn_background(_purge_bench_caches())
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Bench cache purge failed to start: {e}")
+
     # Bound the two tables that only ever grew: `jobs` (every scout, download,
     # analyze and tool run adds a row) and `scout_results` (up to 50 per niche
     # per platform per run). There is no periodic scheduler here, and these are
