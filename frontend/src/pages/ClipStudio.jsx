@@ -1,12 +1,15 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import {
   Box, Typography, Paper, Stack, Chip, IconButton, Button, Divider,
-  TextField, Tooltip, CircularProgress, Slider, Menu, MenuItem,
-  ListItemText, ListItemIcon, Skeleton, Badge, alpha, FormControlLabel, Checkbox,
-  Dialog, DialogTitle, DialogContent, DialogActions,
-  LinearProgress, Collapse, Tabs, Tab,
+  TextField, Tooltip, CircularProgress, Menu, MenuItem,
+  ListItemText, ListItemIcon, Skeleton, Badge, alpha,
+  Dialog, DialogContent,
+  LinearProgress, ToggleButton, ToggleButtonGroup,
 } from "@mui/material"
 import ContentCutIcon from "@mui/icons-material/ContentCut"
+import AutoFixHighIcon from "@mui/icons-material/AutoFixHighOutlined"
+import MovieFilterOutlinedIcon from "@mui/icons-material/MovieFilterOutlined"
+import SlideshowOutlinedIcon from "@mui/icons-material/SlideshowOutlined"
 import WhatshotIcon from "@mui/icons-material/Whatshot"
 import AccessTimeIcon from "@mui/icons-material/AccessTime"
 import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline"
@@ -27,57 +30,16 @@ import CheckCircleIcon from "@mui/icons-material/CheckCircle"
 import VideocamIcon from "@mui/icons-material/Videocam"
 import FolderOpenIcon from "@mui/icons-material/FolderOpen"
 import AddIcon from "@mui/icons-material/Add"
-import TuneIcon from "@mui/icons-material/TuneOutlined"
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore"
-import AutoAwesomeIcon from "@mui/icons-material/AutoAwesomeOutlined"
 import http from "../api/http"
 import useAppStore from "../store/appStore"
 import ActiveJobsBanner from "../components/create/ActiveJobsBanner"
-import { CAPTION_STYLES } from "../components/tools/captionOptions"
-
-/* ── Helpers ───────────────────────────────────────────────── */
-
-function formatTime(seconds) {
-  if (seconds == null) return "--:--"
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m}:${String(s).padStart(2, "0")}`
-}
-
-function viralityColor(score) {
-  if (score >= 8) return "success"
-  if (score >= 6) return "warning"
-  return "default"
-}
-
-function viralityLabel(score) {
-  if (score >= 9) return "Viral"
-  if (score >= 8) return "Strong"
-  if (score >= 6) return "Good"
-  if (score >= 4) return "Average"
-  return "Low"
-}
-
-// Map AI-returned hook_type values to short user-facing labels. The closed
-// set lives server-side in clip_extractor (curiosity_gap, contrarian,
-// emotional_peak, question, number_promise, story_loop, actionable_tip,
-// shocking_claim, general). "general" is the catch-all and renders as null
-// (no chip) so we don't crowd the UI with an uninformative label.
-const HOOK_TYPE_LABEL = {
-  curiosity_gap:  "Curiosity gap",
-  contrarian:     "Contrarian",
-  emotional_peak: "Emotional peak",
-  question:       "Question hook",
-  number_promise: "Number promise",
-  story_loop:     "Story loop",
-  actionable_tip: "Actionable tip",
-  shocking_claim: "Shocking claim",
-}
-
-function hookTypeLabel(t) {
-  if (!t || t === "general") return null
-  return HOOK_TYPE_LABEL[t] || null
-}
+import ExtractDialog from "../components/clip/ExtractDialog"
+import SourceBench from "../components/clip/bench/SourceBench"
+import useClipSettings from "../components/clip/useClipSettings"
+import useBenchRanges, { MIN_LEN_SEC } from "../components/clip/bench/useBenchRanges"
+import {
+  formatTime, hookTypeLabel, viralityColor, viralityLabel,
+} from "../components/clip/clipFormat"
 
 // clip_score_breakdown_json arrives as a JSON string ({flow, value, trend,
 // shareability} each 1-10). Parse defensively — a legacy clip has no field,
@@ -356,502 +318,6 @@ function ClipCard({ clip, isSelected, onClick }) {
   )
 }
 
-/* ── Extract Clips Dialog ──────────────────────────────────── */
-
-const WHISPER_QUALITIES = [
-  { value: "fast", label: "Fast (base)", desc: "~30s per 5min video" },
-  { value: "balanced", label: "Balanced (small)", desc: "~90s per 5min video" },
-  { value: "accurate", label: "Accurate (medium)", desc: "~3min per 5min video" },
-  { value: "best", label: "Best (large-v3)", desc: "~8min per 5min video" },
-]
-
-// Caption styles the OSS pipeline can render. emoji_style vocab matches the
-// backend's _EMOJI_STYLES set (none|minimal|moderate|heavy, default moderate).
-// Every engine style plus the "none" sentinel — the picker used to list
-// three of the ten the renderer supports.
-// The shared list carries a display label per style; the chips used to render
-// the raw value capitalized, so the themed pack read as "Urban / Warm / Mono"
-// instead of "Bold Urban / Warm Glow / Monochrome" — the same names every
-// other surface shows.
-const CAPTION_STYLE_OPTIONS = [
-  ...CAPTION_STYLES.map(s => ({ value: s.value, label: s.label })),
-  { value: "none", label: "None" },
-]
-const EMOJI_STYLE_OPTIONS = [
-  { v: "none", label: "Off" },
-  { v: "minimal", label: "Minimal" },
-  { v: "moderate", label: "Moderate" },
-  { v: "heavy", label: "Heavy" },
-]
-
-// Mirrors _MANUAL_MAX_RANGES in backend/api/downloaded.py — keep aligned so
-// the UI's add-row cap matches what the backend will accept.
-const MANUAL_ROWS_MAX = 10
-
-// Client-side timestamp parse mirroring backend clip_extractor._parse_timestamp
-// so the dialog can red-state a bad row + disable Submit before posting. The
-// backend re-validates and is the authority; this is just instant feedback.
-function parseTimestamp(text) {
-  if (typeof text === "number") return text >= 0 ? text : null
-  const s = String(text ?? "").trim()
-  if (!s) return null
-  const parts = s.split(":")
-  if (parts.length > 3) return null
-  const nums = parts.map(p => parseFloat(p))
-  if (nums.some(n => !Number.isFinite(n) || n < 0)) return null
-  if (nums.length >= 2 && nums[nums.length - 1] >= 60) return null
-  if (nums.length === 3 && nums[1] >= 60) return null
-  if (nums.length === 1) return nums[0]
-  if (nums.length === 2) return nums[0] * 60 + nums[1]
-  return nums[0] * 3600 + nums[1] * 60 + nums[2]
-}
-
-// Shared post-processing controls (rendered under both extraction modes).
-function CaptionStylePicker({ value, onChange }) {
-  return (
-    <Box>
-      <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.5, display: "block" }}>Caption style</Typography>
-      <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-        {CAPTION_STYLE_OPTIONS.map(({ value: v, label }) => (
-          <Chip key={v} label={label} size="small"
-            variant={value === v ? "filled" : "outlined"}
-            color={value === v ? "primary" : "default"}
-            onClick={() => onChange(v)}
-            sx={{ cursor: "pointer" }} />
-        ))}
-      </Stack>
-      {value === "none" && (
-        <Typography variant="caption" sx={{ color: "text.secondary", mt: 0.5, display: "block" }}>
-          No burned-in text at all — the hook overlay is skipped too.
-        </Typography>
-      )}
-    </Box>
-  )
-}
-
-function EmojiStylePicker({ value, onChange, disabled }) {
-  return (
-    <Box>
-      <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.5, display: "block" }}>
-        AutoEmoji <Chip label="captions only" size="small" variant="outlined" sx={{ ml: 0.5, height: 18, fontSize: "0.6rem" }} />
-      </Typography>
-      <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-        {EMOJI_STYLE_OPTIONS.map(({ v, label }) => (
-          <Chip key={v} label={label} size="small"
-            variant={value === v ? "filled" : "outlined"}
-            color={value === v ? "primary" : "default"}
-            onClick={() => onChange(v)}
-            sx={{ cursor: "pointer" }}
-            disabled={disabled} />
-        ))}
-      </Stack>
-      <Typography variant="caption" sx={{ color: "text.secondary", mt: 0.5, display: "block" }}>
-        Emojis are inserted after matched keywords (🔥 fire, 💰 money, ❤️ love, etc.).
-        {disabled ? " Disabled because captions are off." : ""}
-      </Typography>
-    </Box>
-  )
-}
-
-// Shared by both extract modes. It used to live inline in the AI tab only,
-// on the theory that a hand-picked range is a deliberate cut that must not be
-// re-timed — but the backend removes silence INSIDE each already-cut clip, so
-// the picked boundaries are untouched and the clip just gets tighter. Gating
-// it made hand-picked clips the one place pacing could NOT be fixed.
-function RemoveSilenceToggle({ value, onChange }) {
-  return (
-    <Box>
-      <FormControlLabel
-        control={
-          <Checkbox
-            checked={value}
-            onChange={e => onChange(e.target.checked)}
-            size="small"
-          />
-        }
-        label={<Typography variant="caption" sx={{ fontWeight: 600 }}>Remove silence & filler words</Typography>}
-      />
-      <Typography variant="caption" sx={{ color: "text.secondary", display: "block", ml: 4, mt: -0.5 }}>
-        Cuts out "um", "uh", long pauses — tighter pacing for short-form
-      </Typography>
-    </Box>
-  )
-}
-
-function ExtractDialog({ open, onClose, video, onExtract }) {
-  const hasSegments = !!video?.has_transcript_segments
-  const [opts, setOpts] = useState({
-    caption_style: "viral", min_duration: null, max_duration: null,
-    whisper_quality: "balanced", retranscribe: false,
-    remove_silence: false, user_query: "", target_platform: "",
-    emoji_style: "moderate", genre: "",
-  })
-  const [advancedOpen, setAdvancedOpen] = useState(false)
-
-  // Extraction strategy: "ai" (viral-clip picker, default) or "manual" (cut
-  // user-supplied time ranges verbatim). Manual mode fills the `rows` list —
-  // one row per range, capped at MANUAL_ROWS_MAX.
-  const [mode, setMode] = useState("ai")
-  const [rows, setRows] = useState([{ start: "", end: "" }])
-
-  // Reset intent-tied state when the source video changes.
-  useEffect(() => {
-    setOpts(p => ({ ...p, retranscribe: false, user_query: "" }))
-    setAdvancedOpen(false)
-    setMode("ai")
-    setRows([{ start: "", end: "" }])
-  }, [video?.id])
-
-  // Per-row resolution for manual mode: each entry gets {startSec, endSec,
-  // valid, msg} so we can show an inline duration / error next to the fields.
-  const rowResolutions = useMemo(() => rows.map((r) => {
-    const startSec = parseTimestamp(r.start)
-    const endSec = parseTimestamp(r.end)
-    if (r.start === "" && r.end === "") return { startSec: null, endSec: null, valid: false, msg: null }
-    if (startSec == null || endSec == null) return { startSec, endSec, valid: false, msg: "invalid time" }
-    if (endSec <= startSec) return { startSec, endSec, valid: false, msg: "end ≤ start" }
-    if (endSec - startSec < 1) return { startSec, endSec, valid: false, msg: "< 1s" }
-    return { startSec, endSec, valid: true, msg: null }
-  }), [rows])
-
-  if (!video) return null
-
-  const transcribeEnabled = !hasSegments || opts.retranscribe
-  const durationError = opts.min_duration && opts.max_duration && opts.max_duration - opts.min_duration < 1
-
-  // Active manual ranges = only the fully-valid rows. Any partial-but-invalid
-  // row blocks Submit so a half-typed range can't ship.
-  const activeManualRanges = mode === "manual"
-    ? rowResolutions.filter(r => r.valid).map(r => ({ start: r.startSec, end: r.endSec }))
-    : []
-  const manualHasErrors = mode === "manual" && rows.some((r, i) =>
-    (r.start !== "" || r.end !== "") && !rowResolutions[i].valid,
-  )
-  const manualEmpty = mode === "manual" && activeManualRanges.length === 0
-  const canSubmit = mode === "ai" ? !durationError : (!manualEmpty && !manualHasErrors)
-
-  return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-        <ContentCutIcon color="primary" /> Extract Clips
-      </DialogTitle>
-      <DialogContent>
-        <Typography variant="body2" sx={{ color: "text.secondary", mb: 2 }}>
-          From: <strong>{video.title || "Untitled"}</strong> ({formatTime(video.duration_seconds)})
-        </Typography>
-
-        {/* Mode toggle — AI picks the best moments, or you cut your own ranges. */}
-        <Tabs
-          value={mode}
-          onChange={(_, v) => v && setMode(v)}
-          variant="fullWidth"
-          sx={{
-            mb: 2, minHeight: 40,
-            "& .MuiTab-root": { textTransform: "none", minHeight: 40, fontWeight: 600, fontSize: "0.85rem" },
-          }}
-        >
-          <Tab value="ai" icon={<AutoAwesomeIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="AI picks" />
-          <Tab value="manual" icon={<ContentCutIcon sx={{ fontSize: 18 }} />} iconPosition="start" label="My ranges" />
-        </Tabs>
-
-        <Stack spacing={2.5}>
-          {/* Transcription — used by BOTH modes (manual still needs the
-              transcript to render captions against each cut range). */}
-          <Box>
-            <FormControlLabel
-              control={
-                <Checkbox
-                  checked={transcribeEnabled}
-                  onChange={e => setOpts(p => ({ ...p, retranscribe: e.target.checked }))}
-                  disabled={!hasSegments}
-                  size="small"
-                />
-              }
-              label={
-                <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                  Transcription {hasSegments
-                    ? <Chip label="cached" size="small" color="success" variant="outlined" sx={{ ml: 0.5, height: 18, fontSize: "0.65rem" }} />
-                    : <Chip label="required" size="small" color="warning" variant="outlined" sx={{ ml: 0.5, height: 18, fontSize: "0.65rem" }} />
-                  }
-                </Typography>
-              }
-              sx={{ mb: 0.5 }}
-            />
-            {!hasSegments && (
-              <Typography variant="caption" sx={{ color: "text.secondary", display: "block", ml: 4, mb: 1 }}>
-                No word-level transcript found — Whisper will transcribe the audio first
-              </Typography>
-            )}
-            {hasSegments && !opts.retranscribe && (
-              <Typography variant="caption" sx={{ color: "success.main", display: "block", ml: 4, mb: 1 }}>
-                Using cached transcript — Whisper will be skipped
-              </Typography>
-            )}
-            {hasSegments && opts.retranscribe && (
-              <Typography variant="caption" sx={{ color: "warning.main", display: "block", ml: 4, mb: 1 }}>
-                Will re-transcribe with selected model (replaces cached transcript)
-              </Typography>
-            )}
-            <TextField select size="small" fullWidth
-              value={opts.whisper_quality}
-              onChange={e => setOpts(p => ({ ...p, whisper_quality: e.target.value }))}
-              disabled={!transcribeEnabled}
-              sx={{ ml: 0 }}
-            >
-              {WHISPER_QUALITIES.map(q => (
-                <MenuItem key={q.value} value={q.value}>
-                  <Stack direction="row" justifyContent="space-between" sx={{ width: "100%" }}>
-                    <Typography variant="body2">{q.label}</Typography>
-                    <Typography variant="caption" sx={{ color: "text.secondary", ml: 2 }}>{q.desc}</Typography>
-                  </Stack>
-                </MenuItem>
-              ))}
-            </TextField>
-          </Box>
-
-          {/* ── AI mode ─────────────────────────────────────────── */}
-          {mode === "ai" && (
-          <>
-          {/* Duration range */}
-          <Box>
-            <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.5, display: "block" }}>
-              Clip duration range (leave empty for auto 15–60s)
-            </Typography>
-            <Stack direction="row" spacing={2} alignItems="center">
-              <TextField label="Min (s)" type="number" size="small" sx={{ width: 90 }}
-                value={opts.min_duration || ""}
-                error={!!durationError}
-                slotProps={{ htmlInput: { min: 10, max: 120 } }}
-                onChange={e => setOpts(p => ({ ...p, min_duration: parseInt(e.target.value) || null }))} />
-              <Typography variant="body2" sx={{ color: "text.secondary" }}>to</Typography>
-              <TextField label="Max (s)" type="number" size="small" sx={{ width: 90 }}
-                value={opts.max_duration || ""}
-                error={!!durationError}
-                slotProps={{ htmlInput: { min: 15, max: 180 } }}
-                onChange={e => setOpts(p => ({ ...p, max_duration: parseInt(e.target.value) || null }))} />
-            </Stack>
-            {durationError && (
-              <Typography variant="caption" sx={{ color: "error.main", mt: 0.5, display: "block" }}>
-                Max must be at least 1 second greater than Min
-              </Typography>
-            )}
-          </Box>
-
-          <CaptionStylePicker
-            value={opts.caption_style}
-            onChange={v => setOpts(p => ({ ...p, caption_style: v }))} />
-
-          {/* Advanced-options expander — power-user knobs collapsed so the
-              dialog opens compact. Defaults are sensible; only niche cases
-              (custom query, platform / genre bias, emoji, silence) touch these. */}
-          <Box>
-            <Button
-              variant="text"
-              startIcon={<TuneIcon sx={{ fontSize: 18 }} />}
-              endIcon={<ExpandMoreIcon sx={{ fontSize: 18, transform: advancedOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .15s ease" }} />}
-              onClick={() => setAdvancedOpen(v => !v)}
-              sx={{
-                textTransform: "none", fontWeight: 600, color: "text.secondary", px: 0.5, py: 0.5,
-                "&:hover": { bgcolor: "action.hover", color: "primary.main" },
-              }}
-            >
-              Advanced options
-              <Typography variant="caption" sx={{ ml: 0.75, color: "text.disabled", fontWeight: 500 }}>
-                find specific moments · platform · genre · emoji · silence
-              </Typography>
-            </Button>
-          </Box>
-
-          <Collapse in={advancedOpen} timeout={200}>
-            <Stack spacing={2.5}>
-              {/* User query — natural-language clip filter. When non-empty the
-                  AI ranks segments by match to this query first, then virality. */}
-              <Box>
-                <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.5, display: "block" }}>
-                  Find specific moments <Chip label="optional" size="small" variant="outlined" sx={{ ml: 0.5, height: 18, fontSize: "0.6rem" }} />
-                </Typography>
-                <TextField
-                  size="small" fullWidth
-                  placeholder='e.g. "every joke that landed", "all Q&A moments"'
-                  value={opts.user_query}
-                  onChange={e => setOpts(p => ({ ...p, user_query: e.target.value }))}
-                  slotProps={{ htmlInput: { maxLength: 500 } }}
-                />
-                <Typography variant="caption" sx={{ color: "text.secondary", mt: 0.5, display: "block" }}>
-                  Leave empty to find the most viral clips automatically.
-                </Typography>
-              </Box>
-
-              {/* Target platform — biases the AI hook-type ranker. */}
-              <Box>
-                <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.5, display: "block" }}>
-                  Target platform <Chip label="optional" size="small" variant="outlined" sx={{ ml: 0.5, height: 18, fontSize: "0.6rem" }} />
-                </Typography>
-                <TextField select size="small" fullWidth
-                  value={opts.target_platform}
-                  onChange={e => setOpts(p => ({ ...p, target_platform: e.target.value }))}
-                >
-                  <MenuItem value="">Any (general viral ranking)</MenuItem>
-                  <MenuItem value="tiktok">TikTok — shock / contrarian / emotional</MenuItem>
-                  <MenuItem value="youtube_shorts">YouTube Shorts — curiosity / numbers / story</MenuItem>
-                  <MenuItem value="reels">Instagram Reels — emotional / lifestyle</MenuItem>
-                  <MenuItem value="linkedin">LinkedIn — actionable / data-backed</MenuItem>
-                  <MenuItem value="twitter">Twitter / X — hot takes / debates</MenuItem>
-                </TextField>
-                <Typography variant="caption" sx={{ color: "text.secondary", mt: 0.5, display: "block" }}>
-                  Biases which hook types the AI prioritizes. Clip length is unchanged.
-                </Typography>
-              </Box>
-
-              {/* Content genre — biases the AI's clip-selection heuristics. */}
-              <Box>
-                <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.5, display: "block" }}>
-                  Content genre <Chip label="optional" size="small" variant="outlined" sx={{ ml: 0.5, height: 18, fontSize: "0.6rem" }} />
-                </Typography>
-                <TextField select size="small" fullWidth
-                  value={opts.genre}
-                  onChange={e => setOpts(p => ({ ...p, genre: e.target.value }))}
-                >
-                  <MenuItem value="">Auto-detect (no genre bias)</MenuItem>
-                  <MenuItem value="podcast">Podcast — guest's quotable moments</MenuItem>
-                  <MenuItem value="interview">Interview — best Q&amp;A answers</MenuItem>
-                  <MenuItem value="qa">Q&amp;A / AMA — question + answer pairs</MenuItem>
-                  <MenuItem value="vlog">Vlog — reactions + storytelling beats</MenuItem>
-                  <MenuItem value="tutorial">Tutorial / how-to — standalone tips</MenuItem>
-                  <MenuItem value="gaming">Gaming — big plays + reactions</MenuItem>
-                  <MenuItem value="reaction">Reaction — emotional peaks</MenuItem>
-                  <MenuItem value="lecture">Lecture / educational — concept explainers</MenuItem>
-                </TextField>
-                <Typography variant="caption" sx={{ color: "text.secondary", mt: 0.5, display: "block" }}>
-                  Tells the AI what shape a "good clip" has for this content type.
-                </Typography>
-              </Box>
-
-              <EmojiStylePicker
-                value={opts.emoji_style}
-                disabled={opts.caption_style === "none"}
-                onChange={v => setOpts(p => ({ ...p, emoji_style: v }))} />
-
-              <RemoveSilenceToggle
-                value={opts.remove_silence}
-                onChange={v => setOpts(p => ({ ...p, remove_silence: v }))} />
-            </Stack>
-          </Collapse>
-          </>
-          )}
-
-          {/* ── Manual mode ─────────────────────────────────────── */}
-          {mode === "manual" && (
-          <>
-            <Box>
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-                <Typography variant="caption" sx={{ fontWeight: 600 }}>Time ranges</Typography>
-                <Typography variant="caption" sx={{ color: "text.disabled" }}>
-                  ({rows.length}/{MANUAL_ROWS_MAX})
-                </Typography>
-              </Stack>
-              <Typography variant="caption" sx={{ color: "text.secondary", mb: 1, display: "block" }}>
-                Accepts <code>SS</code>, <code>MM:SS</code>, or <code>HH:MM:SS</code> (with optional <code>.fff</code>).
-              </Typography>
-
-              <Stack spacing={0.75}>
-                {rows.map((r, i) => {
-                  const res = rowResolutions[i]
-                  const isError = (r.start !== "" || r.end !== "") && !res.valid
-                  return (
-                    <Stack key={i} direction="row" spacing={1} alignItems="center">
-                      <TextField
-                        size="small" placeholder="Start" value={r.start}
-                        onChange={(e) => setRows(prev => prev.map((row, j) => j === i ? { ...row, start: e.target.value } : row))}
-                        error={isError && res.startSec == null}
-                        sx={{ width: 110 }}
-                        slotProps={{ htmlInput: { style: { fontFamily: "ui-monospace, monospace", fontSize: "0.85rem" } } }}
-                      />
-                      <Typography variant="caption" sx={{ color: "text.disabled" }}>→</Typography>
-                      <TextField
-                        size="small" placeholder="End" value={r.end}
-                        onChange={(e) => setRows(prev => prev.map((row, j) => j === i ? { ...row, end: e.target.value } : row))}
-                        error={isError && (res.endSec == null || (res.startSec != null && res.endSec != null && res.endSec <= res.startSec))}
-                        sx={{ width: 110 }}
-                        slotProps={{ htmlInput: { style: { fontFamily: "ui-monospace, monospace", fontSize: "0.85rem" } } }}
-                      />
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        {res.valid && (
-                          <Typography variant="caption" sx={{ color: "success.main", fontWeight: 600 }}>
-                            {Math.round(res.endSec - res.startSec)}s
-                          </Typography>
-                        )}
-                        {res.msg && (
-                          <Typography variant="caption" sx={{ color: "error.main" }}>{res.msg}</Typography>
-                        )}
-                      </Box>
-                      <IconButton
-                        size="small" aria-label="Remove row"
-                        onClick={() => setRows(prev => prev.length > 1 ? prev.filter((_, j) => j !== i) : prev)}
-                        disabled={rows.length === 1}
-                        sx={{ color: "text.secondary" }}
-                      >
-                        <CloseIcon sx={{ fontSize: 16 }} />
-                      </IconButton>
-                    </Stack>
-                  )
-                })}
-                <Button
-                  size="small"
-                  startIcon={<AddIcon sx={{ fontSize: 16 }} />}
-                  onClick={() => setRows(prev => prev.length < MANUAL_ROWS_MAX ? [...prev, { start: "", end: "" }] : prev)}
-                  disabled={rows.length >= MANUAL_ROWS_MAX}
-                  sx={{ textTransform: "none", alignSelf: "flex-start", fontSize: "0.78rem" }}
-                >
-                  Add range
-                </Button>
-                {rows.length >= MANUAL_ROWS_MAX && (
-                  <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                    Cap at {MANUAL_ROWS_MAX} ranges per submit.
-                  </Typography>
-                )}
-              </Stack>
-            </Box>
-
-            <CaptionStylePicker
-              value={opts.caption_style}
-              onChange={v => setOpts(p => ({ ...p, caption_style: v }))} />
-
-            <EmojiStylePicker
-              value={opts.emoji_style}
-              disabled={opts.caption_style === "none"}
-              onChange={v => setOpts(p => ({ ...p, emoji_style: v }))} />
-
-            <RemoveSilenceToggle
-              value={opts.remove_silence}
-              onChange={v => setOpts(p => ({ ...p, remove_silence: v }))} />
-          </>
-          )}
-        </Stack>
-      </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" startIcon={<ContentCutIcon />}
-          disabled={!canSubmit}
-          onClick={() => {
-            onExtract(video.id, {
-              ...opts,
-              force_retranscribe: transcribeEnabled,
-              mode,
-              time_ranges: mode === "manual" ? activeManualRanges : undefined,
-            })
-            onClose()
-          }}>
-          {mode === "manual"
-            ? `Extract ${activeManualRanges.length || ""} clip${activeManualRanges.length !== 1 ? "s" : ""}`.trim()
-            : "Extract Clips"}
-        </Button>
-      </DialogActions>
-    </Dialog>
-  )
-}
-
-
 /* ══════════════════════════════════════════════════════════════
    MAIN COMPONENT: Clip Studio
    ══════════════════════════════════════════════════════════════ */
@@ -866,6 +332,10 @@ export default function ClipStudio() {
     || (j.inputData && j.inputData.type === "clip_extraction")
   const clipJobs = Object.values(activeJobs).filter(isClipJob)
   const clipJobFilter = (j) => j.status === "running" && isClipJob(j)
+  // Both Cut buttons disable while a cut is in flight. A suggestion search is
+  // NOT a cut, so it deliberately does not gate them — the bench stays usable
+  // while the AI reads.
+  const clipJobRunning = clipJobs.some(clipJobFilter)
   const justCompletedRef = useRef(new Set())
 
   // Data
@@ -892,6 +362,21 @@ export default function ClipStudio() {
 
   // Regen thumbnail
   const [regenThumb, setRegenThumb] = useState(false)
+
+  // Which surface the centre column shows.
+  //   "bench" — work ON the selected source: scrub it, drag ranges over a
+  //             filmstrip, watch the IN/OUT frames, then cut.
+  //   "clip"  — inspect one finished clip (the original behaviour).
+  // Selecting a source used to leave the centre blank whenever that source had
+  // no clips yet, which is exactly the moment a workspace is most useful.
+  const [centerMode, setCenterMode] = useState("bench")
+
+  // Per-clip settings (captions / emoji / silence / vertical / transcription)
+  // are owned HERE and handed to both surfaces. They used to be duplicated
+  // inside the dialog and would have been duplicated again in the bench, so a
+  // caption style picked in one did nothing in the other and whichever surface
+  // you happened to finish in decided the render.
+  const clipSettings = useClipSettings()
 
   // Video player ref
   const videoRef = useRef(null)
@@ -957,6 +442,29 @@ export default function ClipStudio() {
     if (sid) clipCountBySource[sid] = (clipCountBySource[sid] || 0) + 1
   })
 
+  // The source the bench works on. "all" is a review filter, not a video, so
+  // it has no bench.
+  const benchSource = (selectedSourceId && selectedSourceId !== "all")
+    ? sources.find(v => v.id === selectedSourceId) || null
+    : null
+
+  const onBench = !!benchSource && centerMode === "bench"
+
+  // The bench's pending cuts are owned HERE, like clipSettings above, because
+  // the button that spends them lives in the page hero next to Auto-cut — the
+  // app's convention is that the primary action sits top-right, and Cut is the
+  // primary action of this page. The bench renders the timeline and the rail
+  // off this same object, so there is still exactly one list.
+  const benchRanges = useBenchRanges(
+    benchSource?.id || null, benchSource?.duration_seconds || 0)
+
+  // A source shorter than one clip can't be cut at all.
+  const benchTooShort = !!benchSource
+    && (benchSource.duration_seconds || 0) > 0
+    && (benchSource.duration_seconds || 0) < MIN_LEN_SEC
+
+  const cutCount = benchRanges.ranges.length
+
   // Only show clips when a source is selected (or "all" explicitly chosen)
   const showAllClips = selectedSourceId === "all"
   const filteredClips = clips
@@ -1001,6 +509,7 @@ export default function ClipStudio() {
       // boundaries are untouched; the clip just gets tighter. The gate only
       // made hand-picked clips the one place pacing could NOT be fixed.
       if (opts.remove_silence) payload.remove_silence = true
+      if (opts.force_vertical) payload.force_vertical = true
 
       if (isManual) {
         payload.mode = "manual"
@@ -1008,6 +517,9 @@ export default function ClipStudio() {
       } else {
         if (opts.min_duration) payload.min_duration = opts.min_duration
         if (opts.max_duration) payload.max_duration = opts.max_duration
+        // Cap on clip count (the backend clamps 1..99 and auto-scales down
+        // when the content can't support that many; omitted = ~1 per 30s).
+        if (opts.max_clips) payload.max_clips = opts.max_clips
         if (opts.user_query && opts.user_query.trim()) payload.user_query = opts.user_query.trim()
         if (opts.target_platform) payload.target_platform = opts.target_platform
         if (opts.genre) payload.genre = opts.genre
@@ -1025,6 +537,17 @@ export default function ClipStudio() {
     } finally {
       setExtracting(false)
     }
+  }
+
+  /* The bench's one destructive act. It lives here rather than in SourceBench
+     because its button is in the hero — see benchRanges above. */
+  const doCut = async () => {
+    if (!benchSource || !cutCount || extracting || clipJobRunning) return
+    await handleExtract(benchSource.id, {
+      ...clipSettings.toPayload({ hasTranscript: !!benchSource.has_transcript_segments }),
+      mode: "manual",
+      time_ranges: benchRanges.ranges.map(({ start, end }) => ({ start, end })),
+    })
   }
 
   const handleUpload = async (platform) => {
@@ -1176,6 +699,60 @@ export default function ClipStudio() {
               Refresh
             </Button>
           </Tooltip>
+
+          {/* Cut, then Auto-cut. Same treatment — they are two ways of doing
+              one thing and neither is a lesser button — so the ICON carries
+              the difference: scissors for the cuts you chose, a wand for the
+              ones the AI chooses. They used to share the scissors, which is
+              what made them read as duplicates.
+
+              `describeChild` on the tooltips: without it MUI promotes the
+              title to the button's accessible NAME, so Auto-cut announced
+              itself as a paragraph about Ask AI rather than as "Auto-cut". */}
+          {onBench && (
+            <Tooltip describeChild title={benchTooShort
+              ? "This video is shorter than one second — there is nothing to cut"
+              : cutCount
+                ? "Cut exactly the ranges on the timeline"
+                : "Drag on the filmstrip, press N, or Ask AI to add a range first"}>
+              <span>
+                <Button
+                  size="small" variant="contained" color="primary"
+                  disabled={!cutCount || extracting || clipJobRunning || benchTooShort}
+                  startIcon={(extracting || clipJobRunning)
+                    ? <CircularProgress size={14} color="inherit" />
+                    : <ContentCutIcon fontSize="small" />}
+                  onClick={doCut}
+                  sx={{ textTransform: "none", whiteSpace: "nowrap", fontWeight: 700 }}
+                >
+                  {clipJobRunning
+                    ? "Cutting…"
+                    : cutCount
+                      ? `Cut ${cutCount} clip${cutCount !== 1 ? "s" : ""}`
+                      : "Cut clips"}
+                </Button>
+              </span>
+            </Tooltip>
+          )}
+          {selectedSourceId && selectedSourceId !== "all" && (
+            <Tooltip describeChild title="AI picks the moments and cuts them straight away — no review step, any number of clips. To see the picks first and adjust them, use Ask AI on the bench.">
+              <span>
+                <Button
+                  size="small" variant="contained" color="primary"
+                  disabled={extracting || clipJobRunning}
+                  startIcon={(extracting || clipJobRunning)
+                    ? <CircularProgress size={14} color="inherit" />
+                    : <AutoFixHighIcon fontSize="small" />}
+                  onClick={() => {
+                    const src = sources.find(v => v.id === selectedSourceId)
+                    if (src) { setExtractTarget(src); setExtractDialogOpen(true) }
+                  }}
+                  sx={{ textTransform: "none", whiteSpace: "nowrap" }}>
+                  {clipJobRunning ? "Cutting…" : "Auto-cut"}
+                </Button>
+              </span>
+            </Tooltip>
+          )}
         </Stack>
       </Box>
 
@@ -1261,10 +838,45 @@ export default function ClipStudio() {
           )}
         </Box>
 
-        {/* ── Center: Preview + Details ──────────────────────── */}
+        {/* ── Center: Cutting bench | Clip inspector ─────────── */}
         <Box sx={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
-          {selectedClip ? (
+          {/* Mode switch — only meaningful when both surfaces have something
+              to show, so it stays hidden until they do. */}
+          {benchSource && selectedClip && (
+            <Stack direction="row" alignItems="center" spacing={1}
+              sx={{ px: 2, pt: 1.5, pb: 0.5, flexShrink: 0 }}>
+              <ToggleButtonGroup
+                size="small" exclusive value={centerMode}
+                onChange={(_, v) => v && setCenterMode(v)}
+                sx={{ "& .MuiToggleButton-root": { textTransform: "none", py: 0.25, px: 1.25, fontSize: "0.75rem", fontWeight: 700 } }}
+              >
+                <ToggleButton value="bench">
+                  <MovieFilterOutlinedIcon sx={{ fontSize: 15, mr: 0.5 }} />Bench
+                </ToggleButton>
+                <ToggleButton value="clip">
+                  <SlideshowOutlinedIcon sx={{ fontSize: 15, mr: 0.5 }} />Clip
+                </ToggleButton>
+              </ToggleButtonGroup>
+              <Typography variant="caption" sx={{ color: "text.disabled" }}>
+                {centerMode === "bench"
+                  ? "Cut new clips from the source"
+                  : "Review and edit a finished clip"}
+              </Typography>
+            </Stack>
+          )}
+
+          {benchSource && centerMode === "bench" ? (
+            <SourceBench
+              key={benchSource.id}
+              source={benchSource}
+              ranges={benchRanges}
+              existingClips={clips.filter(c => c.source_downloaded_video_id === benchSource.id)}
+              settings={clipSettings.settings}
+              onSettings={clipSettings.update}
+              onOpenDialog={() => { setExtractTarget(benchSource); setExtractDialogOpen(true) }}
+            />
+          ) : selectedClip ? (
             <Box sx={{ flex: 1, overflow: "auto", p: 3 }}>
               <Box sx={{ display: "flex", gap: 3, maxWidth: 1200, mx: "auto" }}>
 
@@ -1505,19 +1117,11 @@ export default function ClipStudio() {
                 Clips ({filteredClips.length})
               </Typography>
               <Box sx={{ flex: 1 }} />
-              {/* Extract button for selected source */}
-              {selectedSourceId && selectedSourceId !== "all" && (
-                <Button size="small" variant="contained" color="primary"
-                  startIcon={extracting ? <CircularProgress size={14} color="inherit" /> : <ContentCutIcon />}
-                  disabled={extracting}
-                  onClick={() => {
-                    const src = sources.find(s => s.id === selectedSourceId)
-                    if (src) { setExtractTarget(src); setExtractDialogOpen(true) }
-                  }}
-                  sx={{ textTransform: "none", height: 30, fontSize: "0.8rem", fontWeight: 700, px: 2, borderRadius: 2 }}>
-                  Extract Clips
-                </Button>
-              )}
+              {/* The "Extract Clips" button that used to sit here is now
+                  "Auto-cut" in the page hero, beside "Cut N clips". Leaving a
+                  third door to the same dialog down here — under a heading
+                  about clips you have ALREADY cut — made it read as a
+                  different act from the one in the corner. */}
             </Stack>
             <Box sx={{
               display: "flex", flexWrap: "nowrap", gap: 1.5, px: 2, pb: 2, pt: 0.5,
@@ -1552,6 +1156,8 @@ export default function ClipStudio() {
         onClose={() => setExtractDialogOpen(false)}
         video={extractTarget}
         onExtract={handleExtract}
+        settings={clipSettings.settings}
+        onSettings={clipSettings.update}
       />
 
       {/* Source video preview popup — video sizes to its natural aspect ratio

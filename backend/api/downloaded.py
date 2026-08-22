@@ -790,7 +790,14 @@ def auto_clip_count(duration_seconds: float | int | None) -> int:
 # ── Manual-mode constants ─────────────────────────────────────────────
 # Surface here so tests and docs can introspect; tweaking these touches
 # both validation and the user-facing 400 message.
-_MANUAL_MAX_RANGES = 10      # cap per submit; mirrored on the frontend
+_MANUAL_MAX_RANGES = 10      # cap per submit; mirrored on the frontend as
+                             # MAX_RANGES (bench/useBenchRanges.js).
+                             # Deliberately lowered 20 → 10 on 2026-05-27
+                             # (UX: 20 was too many for a hand-curated
+                             # workflow) — pinned by
+                             # tests/test_clip_extractor_manual_mode.py.
+                             # It also ceilings AI suggestions, since every
+                             # proposal is cut through manual mode.
 _MANUAL_MIN_CLIP_SEC = 1.0   # sub-second clips have no visual value
 
 

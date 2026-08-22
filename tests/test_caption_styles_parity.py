@@ -55,9 +55,37 @@ def test_remote_config_matches_the_engine_plus_the_none_sentinel():
     assert served == ENGINE_IDS | {"none"}
 
 
-def test_clip_studio_offers_the_shared_list_not_a_copy():
-    """Clip Studio builds its chips from the shared module — a hardcoded array
-    here is how it fell out of sync last time."""
-    src = (FRONTEND / "pages" / "ClipStudio.jsx").read_text()
-    assert "captionOptions" in src
-    assert "CAPTION_STYLES.map" in src
+def test_clip_surfaces_derive_their_styles_and_share_one_default():
+    """/clips has TWO surfaces that burn captions, and they must agree.
+
+    History: the extract dialog carried its own literal list, so most of the
+    engine's styles were unreachable there — fixed by deriving from the shared
+    captionOptions list. Then the cutting bench arrived with a second copy of
+    the same four per-clip controls, and a style chosen on one surface did
+    nothing on the other: whichever you happened to finish in decided the
+    render.
+
+    Both derive their chips from CAPTION_STYLES now, and the DEFAULT lives
+    once in useClipSettings — which ClipStudio owns and hands to both, so
+    there is exactly one caption_style in play at any moment.
+    """
+    dialog = (FRONTEND / "components" / "clip" / "ExtractDialog.jsx").read_text()
+    bench = (FRONTEND / "components" / "clip" / "bench" / "SourceBench.jsx").read_text()
+    shared = (FRONTEND / "components" / "clip" / "useClipSettings.js").read_text()
+
+    # Neither surface may carry its own style ids.
+    for name, src in (("ExtractDialog", dialog), ("SourceBench", bench)):
+        assert "captionOptions" in src, f"{name} no longer derives from the shared list"
+        assert "CAPTION_STYLES" in src, name
+
+    # The off-state wire value has ONE home. The backend's captions_disabled
+    # contract keys on it, and it must be intercepted before the ASS builder
+    # (an unknown id falls back to `viral`, which is how Clipper's "none" chip
+    # once burned full viral subtitles).
+    assert 'caption_style: "none"' in shared, "the captions-off default left useClipSettings"
+    assert 'caption_style: "none"' not in dialog, "ExtractDialog grew its own default again"
+    assert 'caption_style: "none"' not in bench, "SourceBench grew its own default again"
+
+    # And both read the shared object rather than local state.
+    assert "settings.caption_style" in dialog
+    assert "settings.caption_style" in bench

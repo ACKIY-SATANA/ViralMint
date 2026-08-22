@@ -313,7 +313,9 @@ class TestManualConstants:
     def test_max_ranges_is_10(self):
         # Lowered 20 → 10 on 2026-05-27 (UX feedback: 20 was too many
         # for a hand-curated workflow). Mirrored on the frontend as
-        # MANUAL_ROWS_MAX in ClipStudio.jsx — keep both in sync.
+        # MAX_RANGES in components/clip/bench/useBenchRanges.js — keep both
+        # in sync, and raise it HERE first. It also ceilings the AI's
+        # proposals, since every one of them is cut through manual mode.
         assert _MANUAL_MAX_RANGES == 10
 
     def test_min_clip_is_one_second(self):
