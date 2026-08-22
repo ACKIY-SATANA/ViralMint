@@ -29,16 +29,16 @@ All on your machine. Bring your own API keys. No SaaS in the middle. No telemetr
 
 <br/>
 
-<img src="docs/screenshots/chat.webp" alt="ViralMint Chat — streaming AI agent that scouts trending videos, analyzes channels, and orchestrates the full pipeline" width="900" />
+<img src="docs/screenshots/clip-studio.webp" alt="ViralMint Clip Studio — a cutting bench with a filmstrip timeline, speech lane and pending cuts" width="900" />
 
-<sub><i>Chat with the AI agent — paste a URL, ask it to scout a niche, or kick off a workflow, and it runs the right pipeline in the background.</i></sub>
+<sub><i>Cut a long video into shorts on a real timeline — drag across its own frames, snap to sentence boundaries, or let the AI propose the moments. Scouting, transcription, AI video, motion graphics and publishing all run from the same app.</i></sub>
 
 </div>
 
 ---
 
 > **What manual creators do across a dozen tabs and apps, ViralMint runs as one local workflow.**
-> Find trending videos across YouTube, TikTok and Douyin, transcribe and analyze them with local Whisper, cut long videos into publishable shorts, write original scripts with the AI of your choice, render captioned stock-footage videos — and post directly to YouTube and TikTok. Drive it from a browser, or chat with it on Telegram, WhatsApp, Discord, or Slack.
+> Find trending videos across YouTube, TikTok and Douyin, transcribe and analyze them with local Whisper, cut long videos into publishable shorts on a real timeline, write original scripts with the AI of your choice, render captioned stock-footage videos, design animated motion graphics — and post directly to YouTube and TikTok. Drive it from a browser, or chat with it on Telegram, WhatsApp, Discord, or Slack.
 
 ## ✨ Why ViralMint
 
@@ -49,9 +49,9 @@ All on your machine. Bring your own API keys. No SaaS in the middle. No telemetr
 | 🤖 **Agents, not a chat wrapper** | Six purpose-built agents — Planner, Scout, Download, Analyzer, Generator, and **Uploader** — orchestrated by a streaming AI chat that actually runs the work. |
 | 📤 **It publishes for you** | Direct upload to YouTube and TikTok with AI-drafted titles, descriptions, tags, and thumbnails. The full loop, not just generation. |
 | 📱 **Runs from your phone** | Two-way chat with the planner over Telegram, WhatsApp, Discord, or Slack — and job alerts in the same thread. |
-| 🆓 **Free out of the box** | Local Whisper, Edge TTS (400+ voices), royalty-free music, Pexels stock, and 18 FFmpeg tools — the heavy lifting costs $0. Pay only for the AI you choose to plug in. |
+| 🆓 **Free out of the box** | Local Whisper, Edge TTS (400+ voices), royalty-free music, Pexels stock, and 22 FFmpeg tools — the heavy lifting costs $0. Pay only for the AI you choose to plug in. |
 
-<sub>Battle-tested: a **~1,000-test pytest suite** (999 and counting) runs on every commit. AGPL-3.0 — fork it, modify it, build a business on it.</sub>
+<sub>Battle-tested: a **2,300-test pytest suite** runs on every commit, plus a browser harness that drives the real app end to end. AGPL-3.0 — fork it, modify it, build a business on it.</sub>
 
 ---
 
@@ -82,7 +82,21 @@ Full pipeline: AI script → TTS voiceover → Pexels stock footage matched to k
 <td width="50%" valign="top">
 
 ### ✂️ Clip Studio
-One long video → many publishable shorts. AI finds the best moments and scores each on **hook, flow, value, trend-fit and shareability**, snaps cuts to sentence boundaries, and drops re-told stories. Bias picks by **platform or genre**, describe what you want (*"every joke that landed"*), or hand-pick **manual time ranges** — with optional silence trimming, emoji captions, and a burned-in hook overlay.
+One long video → many publishable shorts, cut on a **real timeline**. Drag across a filmstrip of the source's own frames, watch the first and last frame of your cut as you move the handles, and snap to sentence boundaries so a clip never opens mid-word. Type an exact timecode, paste times from show notes, or **ask the AI** — its picks land as blocks you can retime or delete before anything renders, scored on hook, flow, value, trend-fit and shareability. In a hurry, **Auto-cut** does the whole thing in one press and tells you how many clips that means first.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🎞️ Motion Graphics
+A third kind of output, with no footage in it at all: kinetic typography, animated stat cards, lower thirds, product showcases. Describe what you want and the AI writes a real composition; refine it in an embedded animation studio with a timeline, layers and an inspector, then **render it entirely on your own machine**. Installs on demand — it isn't in the download.
+
+</td>
+<td width="50%" valign="top">
+
+### 🗂️ Library
+One faceted view over everything you own — renders, downloads, every tool output, your music folder. Two questions get two controls: tabs say what a file **is** (video / image / audio / files), chips say where it **came from** (created / edited / sources), so a downloaded mp3 doesn't have to pick a side. Group **by source** to see a download beside everything you made from it, and open **Activity** from any page to watch work in flight.
 
 </td>
 </tr>
@@ -117,8 +131,8 @@ yt-dlp under the hood — YouTube, TikTok, Bilibili, Instagram, Twitter/X, Sound
 <tr>
 <td width="50%" valign="top">
 
-### 🧰 18 built-in tools
-Single-purpose utilities — captions, reframe, GIF, speed, trim, subtitles, watermark, merge, auto-zoom, music-visualizer, voice-over, plus AI helpers (translate, metadata, hook analysis, auto-chapters). **Most run 100% locally on FFmpeg + Whisper — no API key.** Each has an inline result preview.
+### 🧰 22 built-in tools
+Single-purpose utilities — captions, reframe, crop, compress, GIF, speed, trim, subtitles, watermark, merge, auto-zoom, music-visualizer, voice-over, silence removal, video download, plus AI helpers (translate, metadata, hook analysis, auto-chapters). **Most run 100% locally on FFmpeg + Whisper — no API key.** Each has an inline result preview and a history of what it produced.
 
 </td>
 <td width="50%" valign="top">
@@ -144,7 +158,8 @@ The expensive parts are free and local. You only pay for the AI you choose to pl
 | Word-by-word animated captions | FFmpeg + ASS subtitles | $0 |
 | Background music library | Royalty-free local library | $0 |
 | Sound-effects auto-placement | FFmpeg-synthesized | $0 |
-| Tools: reframe, GIF, speed, trim, watermark, merge, auto-zoom, music-visualizer, subtitles… | FFmpeg + Whisper | $0 |
+| Tools: reframe, crop, compress, GIF, speed, trim, watermark, merge, auto-zoom, music-visualizer, subtitles… | FFmpeg + Whisper | $0 |
+| Motion-graphics rendering | Local HyperFrames engine | $0 |
 
 YouTube / TikTok / Pexels still need free API keys — links in the [BYOK section](#-bring-your-own-keys-byok).
 
@@ -216,8 +231,9 @@ Every key can be set in `.env` *or* per-user inside the app under **Settings** �
                      ┌────────────────────────────────────────────────┐
                      │            React 18 + MUI 7 SPA                │
                      │       (served by FastAPI in production)        │
-                     │  Chat · Channels · Library · Stock Video       │
-                     │  Clip Studio · Messaging · Tools · Settings    │
+                     │  Chat · Scout · Channels · Library             │
+                     │  Stock Video · Clip Studio · Motion Graphics   │
+                     │  Tools · Messaging · Settings                  │
                      └─────────────────┬──────────────────────────────┘
                                        │  HTTP + WebSocket
                                        ▼
@@ -231,6 +247,7 @@ Every key can be set in `.env` *or* per-user inside the app under **Settings** �
                      │  Analyzer Agent ── Whisper + AI insights       │
                      │  Generator Agent ─ Script → TTS → Stock →      │
                      │                    Captions → Music → MP4      │
+                     │  Motion Renderer ─ local HyperFrames engine    │
                      │  Uploader Agent ── YouTube + TikTok OAuth      │
                      │  Messaging ─────── Telegram · WhatsApp ·       │
                      │                    Discord · Slack             │
@@ -267,32 +284,42 @@ Every key can be set in `.env` *or* per-user inside the app under **Settings** �
 <table>
 <tr>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/library.webp"><img src="docs/screenshots/library.webp" alt="Library — Scout results with virality scores" /></a>
-  <sub><b>Library — Scout results</b><br/>Videos discovered across platforms, sorted by AI virality score, downloadable in one click.</sub>
+  <a href="docs/screenshots/clip-studio.webp"><img src="docs/screenshots/clip-studio.webp" alt="Clip Studio — the cutting bench, with a filmstrip timeline and pending cuts" /></a>
+  <sub><b>Clip Studio — the cutting bench</b><br/>Drag across the source's own frames. Speech lane, sentence snapping, IN/OUT previews, and typeable timecodes. Nothing renders until you press Cut.</sub>
 </td>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/clip-studio.webp"><img src="docs/screenshots/clip-studio.webp" alt="Clip Studio — extract viral shorts from a long-form video" /></a>
-  <sub><b>Clip Studio — viral clip extraction</b><br/>AI picks the best 30–60s moments from a long video, scores them, and burns captions automatically.</sub>
+  <a href="docs/screenshots/auto-cut.webp"><img src="docs/screenshots/auto-cut.webp" alt="Auto-cut — the AI picks the moments and cuts them in one press" /></a>
+  <sub><b>Auto-cut — the express lane</b><br/>Trust the AI and skip the review step. It says how many clips that means for <i>this</i> video before you press the button.</sub>
 </td>
 </tr>
 <tr>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/messaging.webp"><img src="docs/screenshots/messaging.webp" alt="Messaging — Telegram, WhatsApp, Discord, Slack" /></a>
-  <sub><b>Messaging — chat from your phone</b><br/>Connect Telegram, WhatsApp, Discord, or Slack to control the planner and receive job notifications.</sub>
+  <a href="docs/screenshots/library.webp"><img src="docs/screenshots/library.webp" alt="Library — media tabs and origin chips over renders, downloads and tool outputs" /></a>
+  <sub><b>Library — everything you own</b><br/>One view over renders, downloads, every tool output and your music folder. Tabs say what a file is; chips say where it came from.</sub>
 </td>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/channel-analysis.webp"><img src="docs/screenshots/channel-analysis.webp" alt="My Channels — channel analytics" /></a>
-  <sub><b>My Channels — channel analytics</b><br/>Connect any YouTube/TikTok channel by URL. View counts, engagement, median views, and outlier detection.</sub>
+  <a href="docs/screenshots/motion-graphics.webp"><img src="docs/screenshots/motion-graphics.webp" alt="Motion Graphics — an embedded animation studio with a timeline and inspector" /></a>
+  <sub><b>Motion Graphics — designed video, rendered locally</b><br/>Kinetic type, stat cards, lower thirds. The AI writes the composition; you refine it on a timeline and render on your own machine.</sub>
 </td>
 </tr>
 <tr>
 <td width="50%" align="center" valign="top">
   <a href="docs/screenshots/smart-video.webp"><img src="docs/screenshots/smart-video.webp" alt="Smart Video studio" /></a>
-  <sub><b>Smart Video studio</b><br/>Mix your own clips with stock footage; word-by-word captions; background music; live cost estimator.</sub>
+  <sub><b>Smart Video studio</b><br/>Script → voiceover → stock footage → word-by-word captions → music, in one pass. Mix in your own clips and pick a visual style.</sub>
 </td>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/tools.webp"><img src="docs/screenshots/tools.webp" alt="Tools — single-purpose utilities" /></a>
-  <sub><b>Tools — 18 utilities</b><br/>Reframe, watermark, GIF, speed, trim, subtitles, voice-over, hook analysis — most run locally with no API key.</sub>
+  <a href="docs/screenshots/tools.webp"><img src="docs/screenshots/tools.webp" alt="Tools — 22 single-purpose utilities" /></a>
+  <sub><b>Tools — 22 utilities</b><br/>Reframe, crop, compress, watermark, GIF, speed, trim, subtitles, voice-over, hook analysis — most run locally with no API key.</sub>
+</td>
+</tr>
+<tr>
+<td width="50%" align="center" valign="top">
+  <a href="docs/screenshots/chat.webp"><img src="docs/screenshots/chat.webp" alt="Chat — the agent that runs the pipeline" /></a>
+  <sub><b>Chat — the agent that runs it</b><br/>Paste a URL, name a niche, or ask for a video. It dispatches the right agent and reports back in the same thread.</sub>
+</td>
+<td width="50%" align="center" valign="top">
+  <a href="docs/screenshots/messaging.webp"><img src="docs/screenshots/messaging.webp" alt="Messaging — Telegram, WhatsApp, Discord, Slack" /></a>
+  <sub><b>Messaging — drive it from your phone</b><br/>Connect Telegram, WhatsApp, Discord or Slack to command the same agent and get job alerts as they finish.</sub>
 </td>
 </tr>
 </table>
@@ -312,16 +339,18 @@ ViralMint/
 │   ├── core/                       # AI client, BYOK key resolver, crypto, WebSocket manager
 │   ├── messaging/                  # Telegram / WhatsApp / Discord / Slack channels
 │   ├── models/                     # SQLAlchemy models
-│   └── services/                   # TTS, video gen, captions, music, yt-dlp, Whisper, …
+│   └── services/                   # TTS, video gen, captions, music, yt-dlp, Whisper,
+│                                   #   motion rendering, library index, …
 │
 ├── frontend/
 │   └── src/
-│       ├── pages/                  # Chat · Channels · Library · Stock Video · Clip Studio · …
+│       ├── pages/                  # Chat · Scout · Channels · Library · Stock Video ·
+│       │                           #   Clip Studio · Motion Graphics · Tools · Messaging
 │       ├── components/             # Reusable UI (chat, settings, videos, …)
 │       ├── hooks/                  # WebSocket, settings, jobs, source video
 │       └── store/                  # Zustand global state
 │
-├── tests/                          # pytest suite (~1,000 tests)
+├── tests/                          # pytest suite (2,300+ tests)
 ├── storage/                        # Downloaded videos, audio, generated output (gitignored)
 │
 ├── requirements.txt

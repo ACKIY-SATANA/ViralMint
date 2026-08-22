@@ -29,9 +29,9 @@
 
 <br/>
 
-<img src="docs/screenshots/chat.webp" alt="ViralMint Chat — streaming AI agent that scouts trending videos, analyzes channels, and orchestrates the full pipeline" width="900" />
+<img src="docs/screenshots/clip-studio.webp" alt="ViralMint Clip Studio — a cutting bench with a filmstrip timeline, speech lane and pending cuts" width="900" />
 
-<sub><i>AI エージェントとチャット — URL を貼る、ニッチの発掘を頼む、ワークフローを起動する。適切なパイプラインをバックグラウンドで実行します。</i></sub>
+<sub><i>長尺動画を本物のタイムラインでショートに — 元動画のフレームをドラッグし、文の境界にスナップし、あるいは AI に提案させる。トレンド発掘・文字起こし・AI 動画・モーショングラフィックス・公開まで、すべて同じアプリの中で動きます。</i></sub>
 
 </div>
 
@@ -49,9 +49,9 @@
 | 🤖 **チャットのラッパーではなくエージェント** | 目的特化型の6つのエージェント — Planner、Scout、Download、Analyzer、Generator、そして **Uploader** — を、実際に処理を実行するストリーミング AI チャットがオーケストレーションします。 |
 | 📤 **投稿まで代行** | AI が下書きしたタイトル・説明文・タグ・サムネイル付きで、YouTube と TikTok へ直接アップロード。生成だけでなくループ全体をカバーします。 |
 | 📱 **スマホから操作** | Telegram・WhatsApp・Discord・Slack でプランナーと双方向チャット — 同じスレッドでジョブ通知も届きます。 |
-| 🆓 **すぐに無料で使える** | ローカル Whisper、Edge TTS（400以上の音声）、ロイヤリティフリー音楽、Pexels ストック、18の FFmpeg ツール — 重い処理はすべて $0。プラグインする AI のぶんだけ課金されます。 |
+| 🆓 **すぐに無料で使える** | ローカル Whisper、Edge TTS（400以上の音声）、ロイヤリティフリー音楽、Pexels ストック、22の FFmpeg ツール — 重い処理はすべて $0。プラグインする AI のぶんだけ課金されます。 |
 
-<sub>実戦仕込み: 毎コミットで **約1,000テストの pytest スイート**（999個、まだ増加中）が走ります。AGPL-3.0 — フォークして、改変して、その上でビジネスを構築できます。</sub>
+<sub>実戦仕込み: 毎コミットで **2,300テストの pytest スイート** と、実アプリをエンドツーエンドで操作するブラウザハーネスが走ります。AGPL-3.0 — フォークして、改変して、その上でビジネスを構築できます。</sub>
 
 ---
 
@@ -82,7 +82,21 @@
 <td width="50%" valign="top">
 
 ### ✂️ Clip Studio
-1本の長尺動画 → 公開できる多数のショート。AI がベストな瞬間を見つけ、**フック・流れ・価値・トレンド適合・シェアされやすさ** でそれぞれを採点し、カットを文の切れ目にスナップし、繰り返された話は除外します。**プラットフォームやジャンル** でピックを偏らせたり、欲しいものを記述したり（*「ウケたジョークすべて」*）、**手動で時間範囲** を選んだりできます — オプションで無音トリミング、絵文字キャプション、焼き込みのフックオーバーレイも。
+1本の長尺動画 → 公開できる多数のショートを、**本物のタイムライン** の上で切り出します。元動画そのもののフィルムストリップをドラッグすると、ハンドルを動かすあいだカットの最初と最後のフレームがそのまま見え、切れ目は文の境界にスナップするので単語の途中から始まることがありません。正確なタイムコードを直接入力しても、番組ノートの時刻を貼り付けても構いませんし、**AI に提案させる** こともできます — AI のピックは調整も削除もできるブロックとして並び、レンダリングは何も起きません（フック・流れ・価値・トレンド適合・シェアされやすさで採点済み）。急ぐときは **Auto-cut**: 一度押すだけで全部やり、しかも「何本になるか」を先に伝えます。
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🎞️ Motion Graphics
+実写素材をまったく含まない第三の出力: キネティックタイポグラフィ、アニメーションする数値カード、ロワーサード、プロダクト紹介。作りたいものを説明すれば AI が本物のコンポジションを書き、埋め込みのアニメーションスタジオ（タイムライン・レイヤー・インスペクター付き）で仕上げて、**すべて自分のマシン上でレンダリング** します。オンデマンドインストール — ダウンロードには同梱されていません。
+
+</td>
+<td width="50%" valign="top">
+
+### 🗂️ Library
+所有するものすべてを一つのファセット表示に: レンダリング成果物、ダウンロード、あらゆるツールの出力、音楽フォルダ。2つの問いに2つのコントロールが対応します — タブはそのファイルが**何であるか**（動画 / 画像 / 音声 / ファイル）、チップは**どこから来たか**（作成 / 編集 / ソース）を示すので、ダウンロードした mp3 がどちらか一方を選ぶ必要はありません。**ソース別** にまとめれば、ダウンロード1本とそこから作ったすべてが並びます。**Activity** はどのページからでも開けて、進行中の処理を確認できます。
 
 </td>
 </tr>
@@ -117,7 +131,7 @@
 <tr>
 <td width="50%" valign="top">
 
-### 🧰 18の内蔵ツール
+### 🧰 22の内蔵ツール
 単機能ユーティリティ — キャプション、リフレーム、GIF、速度、トリム、字幕、ウォーターマーク、結合、オートズーム、ミュージックビジュアライザー、ボイスオーバー、さらに AI ヘルパー（翻訳、メタデータ、フック分析、自動チャプター）。**ほとんどが FFmpeg + Whisper で100% ローカルに動作 — API キー不要。** それぞれにインラインの結果プレビューが付いています。
 
 </td>
@@ -216,8 +230,9 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
                      ┌────────────────────────────────────────────────┐
                      │            React 18 + MUI 7 SPA                │
                      │       (served by FastAPI in production)        │
-                     │  Chat · Channels · Library · Stock Video       │
-                     │  Clip Studio · Messaging · Tools · Settings    │
+                     │  Chat · Scout · Channels · Library             │
+                     │  Stock Video · Clip Studio · Motion Graphics   │
+                     │  Tools · Messaging · Settings                  │
                      └─────────────────┬──────────────────────────────┘
                                        │  HTTP + WebSocket
                                        ▼
@@ -231,6 +246,7 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
                      │  Analyzer Agent ── Whisper + AI insights       │
                      │  Generator Agent ─ Script → TTS → Stock →      │
                      │                    Captions → Music → MP4      │
+                     │  Motion Renderer ─ local HyperFrames engine    │
                      │  Uploader Agent ── YouTube + TikTok OAuth      │
                      │  Messaging ─────── Telegram · WhatsApp ·       │
                      │                    Discord · Slack             │
@@ -267,32 +283,42 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
 <table>
 <tr>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/library.webp"><img src="docs/screenshots/library.webp" alt="Library — Scout results with virality scores" /></a>
-  <sub><b>Library — 発掘結果</b><br/>プラットフォームを横断して発見した動画を AI バイラリティスコア順にソート、ワンクリックでダウンロード可能。</sub>
+  <a href="docs/screenshots/clip-studio.webp"><img src="docs/screenshots/clip-studio.webp" alt="Clip Studio — カッティングベンチ" /></a>
+  <sub><b>Clip Studio — カッティングベンチ</b><br/>元動画そのもののフレームをドラッグ。音声レーン、文境界へのスナップ、IN/OUT プレビュー、入力できるタイムコード。Cut を押すまで何もレンダリングされません。</sub>
 </td>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/clip-studio.webp"><img src="docs/screenshots/clip-studio.webp" alt="Clip Studio — extract viral shorts from a long-form video" /></a>
-  <sub><b>Clip Studio — バイラルクリップ抽出</b><br/>AI が長尺動画からベストな30〜60秒を選び、採点し、自動でキャプションを焼き込みます。</sub>
-</td>
-</tr>
-<tr>
-<td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/messaging.webp"><img src="docs/screenshots/messaging.webp" alt="Messaging — Telegram, WhatsApp, Discord, Slack" /></a>
-  <sub><b>Messaging — スマホからチャット</b><br/>Telegram・WhatsApp・Discord・Slack を接続してプランナーを操作し、ジョブ通知を受け取れます。</sub>
-</td>
-<td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/channel-analysis.webp"><img src="docs/screenshots/channel-analysis.webp" alt="My Channels — channel analytics" /></a>
-  <sub><b>My Channels — チャンネル分析</b><br/>任意の YouTube / TikTok チャンネルを URL で接続。再生数・エンゲージメント・中央値再生数・外れ値検出を表示。</sub>
+  <a href="docs/screenshots/auto-cut.webp"><img src="docs/screenshots/auto-cut.webp" alt="Auto-cut — 特急レーン" /></a>
+  <sub><b>Auto-cut — 特急レーン</b><br/>AI に任せてレビュー工程を省略。押す前に、*この*動画では何本になるのかを伝えます。</sub>
 </td>
 </tr>
 <tr>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/smart-video.webp"><img src="docs/screenshots/smart-video.webp" alt="Smart Video studio" /></a>
-  <sub><b>Smart Video スタジオ</b><br/>自分のクリップとストック映像をミックス。単語ごとのキャプション、BGM、リアルタイムのコスト見積もり。</sub>
+  <a href="docs/screenshots/library.webp"><img src="docs/screenshots/library.webp" alt="Library — 所有するものすべて" /></a>
+  <sub><b>Library — 所有するものすべて</b><br/>レンダリング成果物・ダウンロード・全ツール出力・音楽フォルダを1つのビューに。タブは「何であるか」、チップは「どこから来たか」。</sub>
 </td>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/tools.webp"><img src="docs/screenshots/tools.webp" alt="Tools — single-purpose utilities" /></a>
-  <sub><b>Tools — 18のユーティリティ</b><br/>リフレーム、ウォーターマーク、GIF、速度、トリム、字幕、ボイスオーバー、フック分析 — ほとんどが API キー不要でローカルに動作。</sub>
+  <a href="docs/screenshots/motion-graphics.webp"><img src="docs/screenshots/motion-graphics.webp" alt="Motion Graphics — デザインされた映像をローカルで" /></a>
+  <sub><b>Motion Graphics — デザインされた映像をローカルで</b><br/>キネティックタイポグラフィ、数値カード、ロワーサード。AI がコンポジションを書き、タイムラインで仕上げ、自分のマシンでレンダリング。</sub>
+</td>
+</tr>
+<tr>
+<td width="50%" align="center" valign="top">
+  <a href="docs/screenshots/smart-video.webp"><img src="docs/screenshots/smart-video.webp" alt="Smart Video スタジオ" /></a>
+  <sub><b>Smart Video スタジオ</b><br/>台本 → ナレーション → ストック映像 → 単語単位キャプション → BGM をワンパスで。自分のクリップを混ぜ、ビジュアルスタイルも選べます。</sub>
+</td>
+<td width="50%" align="center" valign="top">
+  <a href="docs/screenshots/tools.webp"><img src="docs/screenshots/tools.webp" alt="Tools — 22のユーティリティ" /></a>
+  <sub><b>Tools — 22のユーティリティ</b><br/>リフレーム、クロップ、圧縮、ウォーターマーク、GIF、速度、トリム、字幕、ボイスオーバー、フック分析 — ほとんどが API キー不要でローカル動作。</sub>
+</td>
+</tr>
+<tr>
+<td width="50%" align="center" valign="top">
+  <a href="docs/screenshots/chat.webp"><img src="docs/screenshots/chat.webp" alt="Chat — 実際に動かすエージェント" /></a>
+  <sub><b>Chat — 実際に動かすエージェント</b><br/>URL を貼る、ニッチを言う、動画を頼む。適切なエージェントを起動し、同じスレッドで結果を返します。</sub>
+</td>
+<td width="50%" align="center" valign="top">
+  <a href="docs/screenshots/messaging.webp"><img src="docs/screenshots/messaging.webp" alt="Messaging — スマホから操作" /></a>
+  <sub><b>Messaging — スマホから操作</b><br/>Telegram / WhatsApp / Discord / Slack を接続して同じエージェントに指示し、ジョブ完了の通知を受け取れます。</sub>
 </td>
 </tr>
 </table>
@@ -321,7 +347,7 @@ ViralMint/
 │       ├── hooks/                  # WebSocket, settings, jobs, source video
 │       └── store/                  # Zustand global state
 │
-├── tests/                          # pytest suite (~1,000 tests)
+├── tests/                          # pytest suite (2,300+ tests)
 ├── storage/                        # Downloaded videos, audio, generated output (gitignored)
 │
 ├── requirements.txt

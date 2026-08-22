@@ -29,9 +29,9 @@
 
 <br/>
 
-<img src="docs/screenshots/chat.webp" alt="ViralMint Chat — streaming AI agent that scouts trending videos, analyzes channels, and orchestrates the full pipeline" width="900" />
+<img src="docs/screenshots/clip-studio.webp" alt="ViralMint Clip Studio — a cutting bench with a filmstrip timeline, speech lane and pending cuts" width="900" />
 
-<sub><i>与 AI 智能体对话：粘贴一个链接、要它去发现某个细分领域、或直接启动一条工作流——它会在后台跑起正确的流水线。</i></sub>
+<sub><i>在真正的时间轴上把长视频切成短视频——在它自己的帧上拖拽、吸附到句子边界，或者让 AI 先提议。发现选题、转写、AI 视频、动态图形与发布，全都在同一个应用里。</i></sub>
 
 </div>
 
@@ -49,9 +49,9 @@
 | 🤖 **是智能体架构，不是套壳聊天** | 六个各司其职的智能体——Planner、Scout、Download、Analyzer、Generator 和 **Uploader（上传智能体）**——由一个真正会去执行工作的流式 AI 对话统一编排。 |
 | 📤 **它替你发布** | 直接上传到 YouTube 和 TikTok，并附带 AI 起草的标题、描述、标签和缩略图。是完整闭环，而不只是生成。 |
 | 📱 **用手机随时随地掌控** | 通过 Telegram、WhatsApp、Discord 或 Slack 与规划智能体（Planner）双向对话——任务提醒也发到同一个会话里。 |
-| 🆓 **开箱即免费** | 本地 Whisper、Edge TTS（400+ 语音）、免版税音乐、Pexels 素材，以及 18 个 FFmpeg 工具——最重的活儿花费 $0。只为你主动选择接入的 AI 付费。 |
+| 🆓 **开箱即免费** | 本地 Whisper、Edge TTS（400+ 语音）、免版税音乐、Pexels 素材，以及 22 个 FFmpeg 工具——最重的活儿花费 $0。只为你主动选择接入的 AI 付费。 |
 
-<sub>经过实战检验：一套 **~1,000 个测试的 pytest 测试集**（999 个且还在增加）在每次提交时运行。AGPL-3.0——尽管 fork、修改，并在其之上创业。</sub>
+<sub>经过实战检验：一套 **2,300 个测试的 pytest 测试集** 在每次提交时运行，另有一套浏览器测试装置端到端驱动真实应用。AGPL-3.0——尽管 fork、修改，并在其之上创业。</sub>
 
 ---
 
@@ -82,7 +82,21 @@
 <td width="50%" valign="top">
 
 ### ✂️ Clip Studio（切片工作室）
-一条长视频 → 众多可发布的短视频。AI 找出最精彩的片段，并从 **钩子、流畅度、价值、趋势契合度和传播力** 逐项打分，把切点对齐到句子边界，剔除重复讲述的内容。可按 **平台或题材** 偏好挑选，可精确描述你想要什么（*「每个真正好笑的梗」*），也可 **手动指定时间区间**——还能选配静音修剪、emoji 字幕，以及烧录进画面的钩子浮层。
+一条长视频 → 众多可发布的短视频，在**真正的时间轴**上剪。在源视频自己的胶片条上拖拽，拖动手柄时实时看到这一刀的首帧和末帧，切点自动吸附到句子边界，绝不会从半个词开始。可以直接输入精确时间码、粘贴节目笔记里的时间，也可以**让 AI 提议**——它给出的片段会变成可以再调整、可以删除的色块，落地之前什么都不会渲染，并按钩子、流畅度、价值、趋势契合度和传播力打分。赶时间就用 **Auto-cut（一键切）**：一次按下全部搞定，而且会先告诉你这意味着多少条片段。
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🎞️ Motion Graphics（动态图形）
+第三种产出形态，画面里完全没有实拍素材：动态排版、数据卡片、下三分之一字幕条、产品展示。描述你想要的效果，AI 会写出真正的合成工程；再在内嵌的动画工作室里用时间轴、图层和检查器打磨，最后**完全在你自己的机器上渲染**。按需安装——安装包里并不包含它。
+
+</td>
+<td width="50%" valign="top">
+
+### 🗂️ Library（素材库）
+把你拥有的一切收进一个可筛选的视图——渲染成品、下载、每一个工具的产出、你的音乐目录。两个问题对应两个控件：标签页说明文件**是什么**（视频 / 图片 / 音频 / 文件），标记说明它**从哪来**（生成 / 编辑 / 来源），于是一个下载来的 mp3 不必二选一。切到**按来源**分组，就能看到一条下载和你用它做出的所有东西并排；在任意页面打开 **Activity（活动）** 即可查看正在进行的任务。
 
 </td>
 </tr>
@@ -117,7 +131,7 @@
 <tr>
 <td width="50%" valign="top">
 
-### 🧰 18 个内置工具
+### 🧰 22 个内置工具
 单一用途的小工具——字幕、重构图、GIF、变速、裁剪、字幕文件、水印、合并、自动缩放、音乐可视化、配音，外加 AI 助手（翻译、元数据、钩子分析、自动章节）。**大多数 100% 本地运行于 FFmpeg + Whisper——无需 API 密钥。** 每个都带内嵌的结果预览。
 
 </td>
@@ -216,8 +230,9 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
                      ┌────────────────────────────────────────────────┐
                      │            React 18 + MUI 7 SPA                │
                      │       (served by FastAPI in production)        │
-                     │  Chat · Channels · Library · Stock Video       │
-                     │  Clip Studio · Messaging · Tools · Settings    │
+                     │  Chat · Scout · Channels · Library             │
+                     │  Stock Video · Clip Studio · Motion Graphics   │
+                     │  Tools · Messaging · Settings                  │
                      └─────────────────┬──────────────────────────────┘
                                        │  HTTP + WebSocket
                                        ▼
@@ -231,6 +246,7 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
                      │  Analyzer Agent ── Whisper + AI insights       │
                      │  Generator Agent ─ Script → TTS → Stock →      │
                      │                    Captions → Music → MP4      │
+                     │  Motion Renderer ─ local HyperFrames engine    │
                      │  Uploader Agent ── YouTube + TikTok OAuth      │
                      │  Messaging ─────── Telegram · WhatsApp ·       │
                      │                    Discord · Slack             │
@@ -267,32 +283,42 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
 <table>
 <tr>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/library.webp"><img src="docs/screenshots/library.webp" alt="Library — Scout results with virality scores" /></a>
-  <sub><b>资料库——Scout 结果</b><br/>跨平台发现的视频，按 AI 爆款分排序，一键即可下载。</sub>
+  <a href="docs/screenshots/clip-studio.webp"><img src="docs/screenshots/clip-studio.webp" alt="Clip Studio——剪辑台" /></a>
+  <sub><b>Clip Studio——剪辑台</b><br/>在源视频自己的帧上拖拽。语音轨、句子吸附、首末帧预览、可直接输入的时间码。按下 Cut 之前什么都不会渲染。</sub>
 </td>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/clip-studio.webp"><img src="docs/screenshots/clip-studio.webp" alt="Clip Studio — extract viral shorts from a long-form video" /></a>
-  <sub><b>Clip Studio——爆款切片提取</b><br/>AI 从长视频里挑出最佳的 30–60 秒片段，逐一打分，并自动烧录字幕。</sub>
-</td>
-</tr>
-<tr>
-<td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/messaging.webp"><img src="docs/screenshots/messaging.webp" alt="Messaging — Telegram, WhatsApp, Discord, Slack" /></a>
-  <sub><b>Messaging——从手机对话</b><br/>连接 Telegram、WhatsApp、Discord 或 Slack，即可操控规划智能体并接收任务通知。</sub>
-</td>
-<td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/channel-analysis.webp"><img src="docs/screenshots/channel-analysis.webp" alt="My Channels — channel analytics" /></a>
-  <sub><b>My Channels——频道分析</b><br/>用链接即可接入任意 YouTube/TikTok 频道。播放量、互动、中位播放量与异常值检测一览无余。</sub>
+  <a href="docs/screenshots/auto-cut.webp"><img src="docs/screenshots/auto-cut.webp" alt="Auto-cut——快车道" /></a>
+  <sub><b>Auto-cut——快车道</b><br/>信任 AI，跳过复核。按下按钮之前，它会先说明对*这条*视频而言这意味着多少片段。</sub>
 </td>
 </tr>
 <tr>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/smart-video.webp"><img src="docs/screenshots/smart-video.webp" alt="Smart Video studio" /></a>
-  <sub><b>Smart Video 工作室</b><br/>把你自己的片段与素材混剪；逐字字幕；背景音乐；实时成本估算器。</sub>
+  <a href="docs/screenshots/library.webp"><img src="docs/screenshots/library.webp" alt="Library——你拥有的一切" /></a>
+  <sub><b>Library——你拥有的一切</b><br/>渲染成品、下载、每个工具的产出和音乐目录，统一在一个视图里。标签页说明文件是什么，标记说明它从哪来。</sub>
 </td>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/tools.webp"><img src="docs/screenshots/tools.webp" alt="Tools — single-purpose utilities" /></a>
-  <sub><b>Tools——18 个工具</b><br/>重构图、水印、GIF、变速、裁剪、字幕文件、配音、钩子分析——大多数本地运行，无需 API 密钥。</sub>
+  <a href="docs/screenshots/motion-graphics.webp"><img src="docs/screenshots/motion-graphics.webp" alt="Motion Graphics——设计出来的视频，本地渲染" /></a>
+  <sub><b>Motion Graphics——设计出来的视频，本地渲染</b><br/>动态排版、数据卡片、下三分之一字幕条。AI 写出合成工程，你在时间轴上打磨，最后在自己的机器上渲染。</sub>
+</td>
+</tr>
+<tr>
+<td width="50%" align="center" valign="top">
+  <a href="docs/screenshots/smart-video.webp"><img src="docs/screenshots/smart-video.webp" alt="Smart Video 工作室" /></a>
+  <sub><b>Smart Video 工作室</b><br/>脚本 → 配音 → 素材 → 逐字字幕 → 音乐，一次完成。可混入你自己的片段并挑选视觉风格。</sub>
+</td>
+<td width="50%" align="center" valign="top">
+  <a href="docs/screenshots/tools.webp"><img src="docs/screenshots/tools.webp" alt="Tools——22 个工具" /></a>
+  <sub><b>Tools——22 个工具</b><br/>重构图、裁剪、压缩、水印、GIF、变速、裁剪、字幕文件、配音、钩子分析——大多数本地运行，无需 API 密钥。</sub>
+</td>
+</tr>
+<tr>
+<td width="50%" align="center" valign="top">
+  <a href="docs/screenshots/chat.webp"><img src="docs/screenshots/chat.webp" alt="Chat——真正干活的智能体" /></a>
+  <sub><b>Chat——真正干活的智能体</b><br/>粘贴一个链接、说出一个赛道，或者直接要一条视频。它会调度对应的 agent，并在同一个会话里回报结果。</sub>
+</td>
+<td width="50%" align="center" valign="top">
+  <a href="docs/screenshots/messaging.webp"><img src="docs/screenshots/messaging.webp" alt="Messaging——用手机指挥它" /></a>
+  <sub><b>Messaging——用手机指挥它</b><br/>接入 Telegram、WhatsApp、Discord 或 Slack，用同一个智能体干活，并在任务完成时收到提醒。</sub>
 </td>
 </tr>
 </table>
@@ -321,7 +347,7 @@ ViralMint/
 │       ├── hooks/                  # WebSocket, settings, jobs, source video
 │       └── store/                  # Zustand global state
 │
-├── tests/                          # pytest suite (~1,000 tests)
+├── tests/                          # pytest suite (2,300+ tests)
 ├── storage/                        # Downloaded videos, audio, generated output (gitignored)
 │
 ├── requirements.txt
