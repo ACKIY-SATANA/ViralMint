@@ -7,6 +7,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- **A cutting bench in Clip Studio.** Selecting a source video used to blank
+  the centre of the page — it only drew something once a *clip* was selected,
+  so picking a video with no clips yet, which is when you most need a
+  workspace, said "Select a clip to preview". And cutting by hand meant typing
+  timestamps into a box, choosing moments in a video without seeing a frame of
+  it. There is now a timeline you drag on: a real filmstrip of the source's
+  frames, your pending cuts drawn on top of it, a lane showing where the
+  talking is, faded bands for clips you already cut from this video, and first
+  and last frame previews that follow the handles as you move them. Handles
+  snap to sentence boundaries so a clip doesn't open mid-word (hold Alt to
+  move freely). Press play and it plays *that clip* — starting at its in
+  point, stopping at its out point.
+- **Four ways to place a cut, one list.** Drag across the filmstrip, press N
+  at the playhead, paste times you already have ("0:42-1:05, 2:10 → 2:38",
+  from show notes or a chapter list), or ask the AI. All four produce the same
+  editable block. Every pending cut is a row beside the video with **typeable
+  timecodes** — dragging is right for finding a moment and wrong for "start it
+  at exactly 1:30", and a typed time moves the block on the timeline just as
+  if you had dragged it there.
+- **The AI proposes clips instead of just cutting them.** "Ask AI" reads the
+  transcript and puts its picks on the timeline as ordinary blocks, labelled
+  with its own reason and hook score, which you can nudge, retime or delete
+  before anything is rendered. Its choice of in and out point used to be final
+  and invisible until the finished clips appeared.
+- **Auto-cut says what it will do.** The old dialog is now a single-purpose
+  express lane — trust the AI, cut immediately, any number of clips — and it
+  tells you the number first. Leaving "Clips (max)" blank means about one clip
+  per 30 seconds, so a 22-minute podcast quietly meant 43 renders; the button
+  reads "Cut now · up to 43 clips" now, from the same rule the renderer uses.
+- **Captions, emoji, silence trimming and vertical framing are set once.**
+  They apply per clip whichever way you found it, and they used to be
+  duplicated across the two surfaces — so a caption style picked in one place
+  silently failed to apply in the other, and whichever screen you happened to
+  finish on decided the result.
 - **The Library shows everything you own.** Every tool wrote its output to disk
   and none of it appeared anywhere: captions, reframes, merges, trims, crops,
   GIFs, subtitle files, chapter lists — twenty tools, invisible the moment the
@@ -39,6 +73,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   grey block.
 
 ### Fixed
+- **Video scrubbing.** No media route honoured the `Range` header, so dragging
+  through a long podcast made the browser re-fetch far more than it needed and,
+  depending on the version of the server library underneath, could hand back
+  the wrong bytes entirely for the request a player makes to find a file's
+  index. Every player in the app — the bench, the Library, clip previews, tool
+  results — now goes through one implementation that gets it right, and an
+  open-ended request is answered in bounded windows instead of streaming a
+  150 MB file to a browser that only wanted to move the playhead.
+- **A short video produced no timeline at all.** A file's reported length runs
+  to the end of its final frame, so sampling "the middle of the last cell"
+  asked for a frame that doesn't exist — and one missing frame threw the whole
+  filmstrip away. A six-second clip asked for 32 frames got nothing.
+- **The same video was transcribed twice.** Two clip jobs started on one source
+  moments apart each ran Whisper over the same audio: the second waited for the
+  first to finish, then redid its work from scratch, because it was still
+  holding the "no transcript yet" answer it read before it started. On a
+  14-minute source that was nearly three minutes of work done twice for
+  nothing.
+- **One bad suggestion no longer loses all of them.** A clip window that came
+  back from the model missing a start or end time raised an error that failed
+  the entire search rather than dropping that one pick.
+- **The bench's cached frames are cleaned up.** Editing writes hundreds of
+  small preview images, and nothing ever removed one — not when the source was
+  deleted, and not on any schedule. Deleting a video now takes its cached
+  frames with it, and anything older than a month is swept at startup.
 - **Clearing the activity log no longer deletes your files.** A successful tool
   run is now the Library item for the file it produced, which made every path
   that removed a job row a path that could make a video disappear while its
