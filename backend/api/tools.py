@@ -20,7 +20,7 @@ import logging
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 
@@ -132,8 +132,15 @@ def safe_tools_path(path_str: str) -> Path:
     return p
 
 
-# Output extension → content-type. Shared by the download response and the
-# lightweight /download-meta probe the frontend uses to pick a preview element.
+# Output extension → content-type, for the lightweight /download-meta probe
+# the frontend uses to PICK a preview element (it branches on
+# `content_type.startsWith("video/")`, which is why the default here is
+# video/mp4 rather than octet-stream).
+#
+# The download response itself no longer reads this map: it goes through
+# `videos.serve_media_with_range`, which types the bytes off the same map every
+# other media route uses. Keep this one to the question it answers — "which
+# element should render this?" — and don't grow it into a second MIME table.
 _TOOL_OUTPUT_MEDIA = {
     ".mp3": "audio/mpeg",
     ".wav": "audio/wav",
@@ -186,7 +193,7 @@ async def download_meta(job_id: str):
 
 
 @router.get("/download/{job_id}")
-async def download_tool_result(job_id: str):
+async def download_tool_result(job_id: str, request: Request):
     """Serve the output of a completed tool job."""
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Job).where(Job.id == job_id))
@@ -204,12 +211,14 @@ async def download_tool_result(job_id: str):
         raise HTTPException(404, "Output file no longer on disk (expired?)")
 
     tool_label = job.job_type.replace(":", "_")
-    ext = path.suffix.lower()
-    media = _TOOL_OUTPUT_MEDIA.get(ext, "video/mp4")
-    return FileResponse(
-        path, media_type=media,
-        filename=f"viralmint_{tool_label}{path.suffix}",
-    )
+    # Range-aware, because this route is not only a download: ToolRunner
+    # mounts it as the result preview's `<video src>`, so it is scrubbed as
+    # often as it is saved. A request with no Range (which is what the
+    # Download button sends) still gets the whole file with the filename
+    # attached.
+    from backend.api.videos import serve_media_with_range
+    return serve_media_with_range(
+        path, request, filename=f"viralmint_{tool_label}{path.suffix}")
 
 
 # ── Tool endpoints ─────────────────────────────────────────────────────────────

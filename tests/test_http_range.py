@@ -7,6 +7,8 @@ it wrong: the suffix form silently serving the wrong bytes, an open-ended
 range pinning a worker thread until a 150 MB file drains, a 416 without the
 Content-Range it is required to carry.
 """
+import pathlib
+
 import pytest
 
 from backend.core.http_range import (
@@ -153,3 +155,35 @@ def test_serve_media_with_range_raises_416_with_headers(tmp_path):
         serve_media_with_range(f, _fake_request("bytes=999-"))
     assert ei.value.status_code == 416
     assert ei.value.headers == {"Content-Range": "bytes */10"}
+
+
+def test_the_tool_download_route_is_range_aware_too():
+    """ToolRunner mounts /api/tools/download/{id} as its result preview's
+    `<video src>`, so it is scrubbed as often as it is saved — it belongs on
+    the shared streamer with the other four. This was missed on the first pass
+    and found by asking which OTHER routes a `<video>` points at."""
+    src = pathlib.Path("backend/api/tools.py").read_text()
+    assert "serve_media_with_range" in src
+    assert "request: Request" in src
+
+
+def test_every_route_a_player_points_at_shares_one_streamer():
+    """The whole point of the shared helper is that there is no fifth copy.
+
+    A route that returns a bare FileResponse for scrubbable media is the bug
+    this replaced; the ones left are downloads and images, where Range buys
+    nothing.
+    """
+    import re
+    players = {
+        "backend/api/videos.py": 2,      # /videos/{id}/stream + /stream/{aspect}
+        "backend/api/downloaded.py": 1,  # /downloaded/{id}/stream
+        "backend/api/library.py": 2,     # /library/asset + /library/track
+        "backend/api/tools.py": 1,       # /tools/download/{job_id}
+    }
+    for path, expected in players.items():
+        src = pathlib.Path(path).read_text()
+        n = len(re.findall(r"serve_media_with_range\(", src))
+        # videos.py also DEFINES it, so allow the definition line there.
+        n -= 1 if path.endswith("videos.py") else 0
+        assert n >= expected, f"{path}: {n} call(s), expected at least {expected}"
