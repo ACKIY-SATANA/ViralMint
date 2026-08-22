@@ -853,6 +853,141 @@ async def _generate_channel_ai_analysis(summary: dict, user_id: str) -> str:
         return ""
 
 
+async def run_suggest_clips(
+    job_id: str,
+    downloaded_video_id: str,
+    opts: ExtractOptions,
+    user_id: str = "local",
+):
+    """Find viral moments and RETURN them — cut nothing.
+
+    The plan half of AI picks, for Clipper's cutting bench: the same
+    transcript load and the same `_select_clip_windows_with_retries` the
+    extract job runs, stopping before a single frame is encoded. The windows
+    come back in `output_json` so the bench can draw them on the timeline as
+    proposals the user nudges, deletes or accepts.
+
+    Whisper may still have to run here (a source with no cached transcript),
+    which is why this is a Job and not a request handler — it is local, free
+    and can take minutes.
+    """
+    max_clips = opts.max_clips
+    logger.info(
+        "TASK START suggest_clips | job=%s video=%s max=%d",
+        job_id[:8], downloaded_video_id[:8], max_clips,
+    )
+    from backend.agents.job_helper import update_job_status
+    from backend.database import AsyncSessionLocal
+    from backend.models.downloaded_video import DownloadedVideo
+    from backend.models.user_settings import UserSettings
+    from backend.services.clip_extractor import (
+        _load_or_transcribe_segments,
+        _remove_overlapping_clips,
+        _select_clip_windows_with_retries,
+    )
+    from sqlalchemy import select
+
+    try:
+        await update_job_status(job_id, "running", progress_pct=0,
+                                current_step="Loading video...")
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(DownloadedVideo).where(DownloadedVideo.id == downloaded_video_id)
+            )
+            video = result.scalar_one_or_none()
+            if not video:
+                raise ValueError(f"Downloaded video {downloaded_video_id} not found")
+            result = await db.execute(
+                select(UserSettings).where(UserSettings.user_id == user_id)
+            )
+            user_settings = result.scalar_one_or_none()
+
+        await update_job_status(job_id, "running", progress_pct=10,
+                                current_step="Reading the transcript...")
+        segments = await _load_or_transcribe_segments(
+            video,
+            user_settings,
+            whisper_quality=opts.whisper_quality,
+            force_retranscribe=opts.force_retranscribe,
+            job_id=job_id,
+            user_id=user_id,
+        )
+        if not segments:
+            raise ValueError(
+                "This video has no speech to analyse — drag your own ranges instead"
+            )
+
+        await update_job_status(job_id, "running", progress_pct=55,
+                                current_step="Finding the strongest moments...")
+        duration = int(video.duration_seconds or 0)
+        windows = await _select_clip_windows_with_retries(
+            segments,
+            video.title or "Untitled",
+            duration,
+            max_clips,
+            user_settings,
+            min_duration=opts.min_duration,
+            max_duration=opts.max_duration,
+            job_id=job_id,
+            user_id=user_id,
+            user_query=opts.user_query,
+            target_platform=opts.target_platform,
+            genre=opts.genre,
+        )
+        # Sanitize BEFORE anything compares these numbers. The windows come
+        # straight from an LLM, and a NaN bound would reach the bench as a
+        # block of undefined width.
+        clean = []
+        for w in windows or []:
+            if not isinstance(w, dict):
+                continue
+            try:
+                start = float(w.get("start"))
+                end = float(w.get("end"))
+            except (TypeError, ValueError):
+                continue
+            if not (start >= 0 and end > start):
+                continue
+            clean.append({**w, "start": start, "end": end})
+
+        clean = _remove_overlapping_clips(clean)
+        if not clean:
+            raise ValueError(
+                "The AI found no clip-worthy moments in this video — "
+                "try a wider length range, or drag your own"
+            )
+
+        # Trim to the shape the bench needs. The full window carries the
+        # scoring internals; the timeline only draws a span and a reason.
+        suggestions = [{
+            "start": round(w["start"], 3),
+            "end": round(w["end"], 3),
+            "title": (w.get("title") or "").strip() or None,
+            "score": w.get("virality_score"),
+            "hook_score": w.get("hook_score"),
+            "hook_type": w.get("hook_type"),
+            "reason": (w.get("reason") or w.get("reasoning") or "").strip() or None,
+        } for w in clean[:max_clips]]
+        suggestions.sort(key=lambda s: s["start"])
+
+        await update_job_status(
+            job_id, "success", progress_pct=100,
+            current_step=f"Found {len(suggestions)} moment(s)",
+            output_data={"type": "clip_suggestions",
+                         "downloaded_video_id": downloaded_video_id,
+                         "suggestions": suggestions},
+        )
+        logger.info("TASK DONE suggest_clips | job=%s found=%d",
+                    job_id[:8], len(suggestions))
+    except asyncio.CancelledError:
+        logger.info("TASK CANCELLED suggest_clips | job=%s", job_id[:8])
+        raise
+    except Exception as e:
+        logger.error("TASK FAILED suggest_clips | job=%s: %s", job_id[:8], e, exc_info=True)
+        await update_job_status(job_id, "failed", error_message=str(e))
+
+
 async def run_extract_clips(
     job_id: str,
     downloaded_video_id: str,

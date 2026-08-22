@@ -1099,17 +1099,91 @@ def _find_silent_gaps(
     return result
 
 
+# One in-flight transcription per source. `video` is a row that was read
+# BEFORE the job started, so its `transcript_segments_json` is a snapshot: two
+# jobs launched on the same source seconds apart both see NULL and both
+# transcribe the same audio. whisper_service's own gate stops them thrashing
+# the CPU — the second simply WAITS for the first to finish and then redoes its
+# work from scratch. Two clip jobs on one 14-minute source is 2m45s of Whisper
+# spent twice, the second pass starting a second after the first wrote the
+# transcript it needed.
+#
+# So: serialize per source and RE-READ the row inside the lock. Both jobs are
+# asyncio tasks in one process, so an asyncio.Lock closes the window completely
+# rather than narrowing it. No deadlock risk against the whisper gate: nobody
+# holds that gate while waiting for one of these.
+_TRANSCRIBE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _parse_segments(raw: str | None, video_id: str) -> list[dict] | None:
+    """Cached segments, or None when there are none worth using."""
+    if not raw:
+        return None
+    try:
+        segments = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning(f"Corrupt transcript_segments_json for {video_id[:8]}, re-transcribing")
+        return None
+    return segments or None
+
+
+async def _cached_segments_from_db(video_id: str) -> list[dict] | None:
+    """Re-read one row's transcript. Never raises — a failed peek just means we
+    transcribe, which is the old behaviour."""
+    try:
+        from backend.database import AsyncSessionLocal
+        from backend.models.downloaded_video import DownloadedVideo
+        from sqlalchemy import select
+        async with AsyncSessionLocal() as db:
+            row = (await db.execute(
+                select(DownloadedVideo.transcript_segments_json)
+                .where(DownloadedVideo.id == video_id)
+            )).scalar_one_or_none()
+        return _parse_segments(row, video_id)
+    except Exception as e:
+        logger.debug(f"Transcript re-check failed for {video_id[:8]}: {e}")
+        return None
+
+
+def _lock_has_waiters(lock: asyncio.Lock) -> bool:
+    return bool(getattr(lock, "_waiters", None))
+
+
 async def _load_or_transcribe_segments(video, user_settings, whisper_quality: str = "balanced", force_retranscribe: bool = False, job_id: str = None, user_id: str = "local") -> list[dict]:
     """Load segments from DB or run Whisper if needed."""
-    # Try loading from DB first (skip if user wants to re-transcribe)
-    if not force_retranscribe and video.transcript_segments_json:
+    # Try loading from the snapshot first (skip if the caller wants a fresh
+    # transcript). A source that already has one never takes the lock at all.
+    if not force_retranscribe:
+        segments = _parse_segments(video.transcript_segments_json, video.id)
+        if segments:
+            logger.info(f"Using cached transcript segments for {video.id[:8]}")
+            return segments
+
+    lock = _TRANSCRIBE_LOCKS.setdefault(video.id, asyncio.Lock())
+    async with lock:
         try:
-            segments = json.loads(video.transcript_segments_json)
-            if segments:
-                logger.info(f"Using cached transcript segments for {video.id[:8]}")
-                return segments
-        except (json.JSONDecodeError, TypeError):
-            logger.warning(f"Corrupt transcript_segments_json for {video.id[:8]}, re-transcribing")
+            return await _transcribe_locked(
+                video, user_settings, whisper_quality, force_retranscribe,
+                job_id, user_id)
+        finally:
+            # Don't accumulate one lock per source ever transcribed. Safe to
+            # drop only while nobody is queued on it.
+            if not lock.locked() or not _lock_has_waiters(lock):
+                _TRANSCRIBE_LOCKS.pop(video.id, None)
+
+
+async def _transcribe_locked(video, user_settings, whisper_quality, force_retranscribe,
+                             job_id, user_id) -> list[dict]:
+    # THE re-check. We may have just waited out another job's transcription of
+    # this exact source; `video` is too old to know that.
+    if not force_retranscribe:
+        segments = await _cached_segments_from_db(video.id)
+        if segments:
+            logger.info(
+                "Reusing the transcript another job just wrote for %s — "
+                "skipped a second Whisper pass", video.id[:8],
+            )
+            return segments
 
     # Need to run Whisper
     audio_path = video.audio_path or video.video_path
@@ -1448,13 +1522,27 @@ def _snap_to_sentence_boundaries(
 
 
 def _remove_overlapping_clips(windows: list[dict]) -> list[dict]:
-    """Remove overlapping clips, keeping higher-scored ones (assumed pre-sorted by score desc)."""
+    """Remove overlapping clips, keeping higher-scored ones (assumed pre-sorted by score desc).
+
+    Bounds are compared numerically, and every window here came from an LLM.
+    `_select_clip_windows` does coerce them before returning, so today no
+    caller can hand this a null — but that is a property of one function
+    upstream, not of this one, and a missing bound would raise a TypeError
+    that fails the ENTIRE search rather than dropping one bad pick. Skip what
+    cannot be compared; a window with no start is not a clip.
+    """
     kept = []
     for w in windows:
+        try:
+            ws, we = float(w["start"]), float(w["end"])
+        except (KeyError, TypeError, ValueError):
+            logger.info("Dropping a clip window with unusable bounds: %r",
+                        {k: w.get(k) for k in ("start", "end")} if isinstance(w, dict) else w)
+            continue
         overlaps = False
         for k in kept:
             # Check if they overlap (with 2s tolerance)
-            if w["start"] < k["end"] - 2 and w["end"] > k["start"] + 2:
+            if ws < k["end"] - 2 and we > k["start"] + 2:
                 overlaps = True
                 break
         if not overlaps:

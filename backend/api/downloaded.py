@@ -764,6 +764,29 @@ async def reanalyze_video(video_id: str, body: dict = None):
     return {"job_id": job.id}
 
 
+# ── Auto-cut sizing ───────────────────────────────────────────────────
+# How many clips the AI picker aims for when the caller names no number.
+# Leaving "Clips (max)" blank on a 22-minute source means 43 clips, and the
+# dialog that submits it used to show no figure at all — it said "Extract
+# now" and quietly authorised 43 renders. The rule lives HERE, once, and the
+# dialog reads the same number from
+# frontend/src/components/clip/autoClipCount.js, pinned across the two by
+# tests/test_auto_clip_count_parity.py. A surface that promises a count has
+# to resolve it the way the runner will.
+AUTO_CLIP_SECONDS_PER_CLIP = 30
+AUTO_CLIP_MIN = 3
+AUTO_CLIP_MAX = 99
+AUTO_CLIP_UNKNOWN_DURATION = 5
+
+
+def auto_clip_count(duration_seconds: float | int | None) -> int:
+    """How many clips Auto-cut will aim for when the user names no number."""
+    if not duration_seconds or duration_seconds <= 0:
+        return AUTO_CLIP_UNKNOWN_DURATION
+    return max(AUTO_CLIP_MIN,
+               min(AUTO_CLIP_MAX, int(duration_seconds) // AUTO_CLIP_SECONDS_PER_CLIP))
+
+
 # ── Manual-mode constants ─────────────────────────────────────────────
 # Surface here so tests and docs can introspect; tweaking these touches
 # both validation and the user-facing 400 message.
@@ -970,7 +993,8 @@ async def extract_clips(video_id: str, body: ExtractClipsRequest | None = None):
         if max_clips_input is not None:
             max_clips = max(1, min(int(max_clips_input), 99))
         else:
-            max_clips = max(3, min(99, duration // 30)) if duration > 0 else 5
+            # Same rule the dialog quotes — see auto_clip_count.
+            max_clips = auto_clip_count(duration)
 
     from backend.agents.job_helper import create_job
     from backend.core.task_runner import run_extract_clips, dispatch
@@ -1016,6 +1040,128 @@ async def extract_clips(video_id: str, body: ExtractClipsRequest | None = None):
             "type": "clip_extraction",
             "downloaded_video_id": video_id,
             "mode": mode,
+            "max_clips": max_clips,
+        },
+    }, "local")
+    return {"job_id": job.id}
+
+
+class SuggestClipsRequest(BaseModel):
+    """Wire model for POST /downloaded/{id}/suggest-clips.
+
+    A strict subset of ExtractClipsRequest: the AI-targeting knobs plus the
+    transcription controls. Nothing about captions, emoji, silence or aspect
+    belongs here — this endpoint produces no clip to apply them to.
+    """
+    max_clips: Optional[int] = None
+    min_duration: Optional[int] = None
+    max_duration: Optional[int] = None
+    user_query: Optional[str] = None
+    target_platform: Optional[str] = None
+    genre: Optional[str] = None
+    whisper_quality: str = "balanced"
+    force_retranscribe: bool = False
+
+
+@router.post("/downloaded/{video_id}/suggest-clips")
+async def suggest_clips(video_id: str, body: SuggestClipsRequest | None = None):
+    """Find viral moments WITHOUT cutting them — the plan half of AI picks.
+
+    Runs the same transcript load and the same AI window selection as
+    mode="ai" extraction, then stops and hands the windows back. The Clipper
+    bench draws them on its timeline as proposals the user can drag, delete or
+    accept; accepting posts them straight back through manual mode, so what
+    gets cut is what was on screen.
+
+    Free to look at, and that is the point: the AI's choice of in and out
+    point used to be final and invisible until after the clips existed.
+
+    Body params (all optional, AI-targeting only):
+        max_clips: how many moments to propose. Clamped to
+            `_MANUAL_MAX_RANGES`, because every proposal has to survive the
+            round trip back through manual mode to be cut.
+        min_duration / max_duration: int seconds
+        user_query / target_platform / genre: same vocabulary as
+            POST /extract-clips
+        whisper_quality / force_retranscribe: transcription controls, used
+            only when the source has no cached transcript
+
+    Returns:
+        {"job_id": str} — poll /api/jobs/{id}; on success `output_json`
+        carries {"type": "clip_suggestions", "suggestions": [
+            {start, end, title, score, hook_score, hook_type, reason}, ...]}
+    """
+    req = body or SuggestClipsRequest()
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(DownloadedVideo).where(DownloadedVideo.id == video_id)
+        )
+        video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="Downloaded video not found")
+    if not video.video_path or not Path(video.video_path).exists():
+        raise HTTPException(status_code=400, detail="Video file not found on disk")
+
+    duration = video.duration_seconds or 0
+    min_duration = req.min_duration
+    max_duration = req.max_duration
+    if min_duration is not None:
+        min_duration = max(10, int(min_duration))
+    if max_duration is not None:
+        max_duration = max(15, int(max_duration))
+    if min_duration and max_duration and min_duration >= max_duration:
+        raise HTTPException(status_code=400,
+                            detail="min_duration must be less than max_duration")
+
+    # Capped at the manual-mode ceiling on purpose: a proposal the bench
+    # cannot submit is worse than one it never made. Users who want more clips
+    # than the bench can review still have direct extraction.
+    if req.max_clips is not None:
+        max_clips = max(1, min(int(req.max_clips), _MANUAL_MAX_RANGES))
+    else:
+        max_clips = int(min(auto_clip_count(duration), _MANUAL_MAX_RANGES))
+
+    _WHISPER_QUALITIES = {"fast", "balanced", "accurate", "best"}
+    wq = (req.whisper_quality or "balanced").strip().lower()
+    if wq not in _WHISPER_QUALITIES:
+        wq = "balanced"
+
+    from backend.agents.job_helper import create_job
+    from backend.core.task_runner import run_suggest_clips, dispatch
+    from backend.core.ws_manager import ws_manager
+    from backend.services.clip_options import ExtractOptions
+
+    job = await create_job("generate", "local", {
+        "downloaded_video_id": video_id,
+        "type": "clip_suggestion",
+        "max_clips": max_clips,
+    })
+    opts = ExtractOptions(
+        mode="ai",
+        max_clips=max_clips,
+        min_duration=min_duration,
+        max_duration=max_duration,
+        whisper_quality=wq,
+        force_retranscribe=bool(req.force_retranscribe),
+        user_query=(req.user_query or "").strip() or None,
+        target_platform=(req.target_platform or "").strip().lower() or None,
+        genre=(req.genre or "").strip().lower() or None,
+    )
+    dispatch(run_suggest_clips(
+        job_id=job.id,
+        downloaded_video_id=video_id,
+        opts=opts,
+        user_id="local",
+    ))
+    await ws_manager.send({
+        "type": "job_started",
+        "job_id": job.id,
+        "job_type": "generate",
+        "message": f"Finding the strongest moments in: {video.title or 'Untitled'}",
+        "input_data": {
+            "type": "clip_suggestion",
+            "downloaded_video_id": video_id,
             "max_clips": max_clips,
         },
     }, "local")
