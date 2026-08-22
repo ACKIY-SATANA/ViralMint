@@ -29,7 +29,7 @@ All on your machine. Bring your own API keys. No SaaS in the middle. No telemetr
 
 <br/>
 
-<img src="docs/screenshots/clip-studio.webp" alt="ViralMint Clip Studio — a cutting bench with a filmstrip timeline, speech lane and pending cuts" width="900" />
+<img src="docs/screenshots/clipper-bench.webp" alt="ViralMint Clip Studio — a cutting bench with a filmstrip timeline, speech lane and pending cuts" width="900" />
 
 <sub><i>Cut a long video into shorts on a real timeline — drag across its own frames, snap to sentence boundaries, or let the AI propose the moments. Scouting, transcription, AI video, motion graphics and publishing all run from the same app.</i></sub>
 
@@ -284,7 +284,7 @@ Every key can be set in `.env` *or* per-user inside the app under **Settings** �
 <table>
 <tr>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/clip-studio.webp"><img src="docs/screenshots/clip-studio.webp" alt="Clip Studio — the cutting bench, with a filmstrip timeline and pending cuts" /></a>
+  <a href="docs/screenshots/clipper-bench.webp"><img src="docs/screenshots/clipper-bench.webp" alt="Clip Studio — the cutting bench, with a filmstrip timeline and pending cuts" /></a>
   <sub><b>Clip Studio — the cutting bench</b><br/>Drag across the source's own frames. Speech lane, sentence snapping, IN/OUT previews, and typeable timecodes. Nothing renders until you press Cut.</sub>
 </td>
 <td width="50%" align="center" valign="top">

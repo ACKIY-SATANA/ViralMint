@@ -29,7 +29,7 @@
 
 <br/>
 
-<img src="docs/screenshots/clip-studio.webp" alt="ViralMint Clip Studio — a cutting bench with a filmstrip timeline, speech lane and pending cuts" width="900" />
+<img src="docs/screenshots/clipper-bench.webp" alt="ViralMint Clip Studio — a cutting bench with a filmstrip timeline, speech lane and pending cuts" width="900" />
 
 <sub><i>在真正的时间轴上把长视频切成短视频——在它自己的帧上拖拽、吸附到句子边界，或者让 AI 先提议。发现选题、转写、AI 视频、动态图形与发布，全都在同一个应用里。</i></sub>
 
@@ -283,7 +283,7 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
 <table>
 <tr>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/clip-studio.webp"><img src="docs/screenshots/clip-studio.webp" alt="Clip Studio——剪辑台" /></a>
+  <a href="docs/screenshots/clipper-bench.webp"><img src="docs/screenshots/clipper-bench.webp" alt="Clip Studio——剪辑台" /></a>
   <sub><b>Clip Studio——剪辑台</b><br/>在源视频自己的帧上拖拽。语音轨、句子吸附、首末帧预览、可直接输入的时间码。按下 Cut 之前什么都不会渲染。</sub>
 </td>
 <td width="50%" align="center" valign="top">

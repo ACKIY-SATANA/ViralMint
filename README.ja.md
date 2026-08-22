@@ -29,7 +29,7 @@
 
 <br/>
 
-<img src="docs/screenshots/clip-studio.webp" alt="ViralMint Clip Studio — a cutting bench with a filmstrip timeline, speech lane and pending cuts" width="900" />
+<img src="docs/screenshots/clipper-bench.webp" alt="ViralMint Clip Studio — a cutting bench with a filmstrip timeline, speech lane and pending cuts" width="900" />
 
 <sub><i>長尺動画を本物のタイムラインでショートに — 元動画のフレームをドラッグし、文の境界にスナップし、あるいは AI に提案させる。トレンド発掘・文字起こし・AI 動画・モーショングラフィックス・公開まで、すべて同じアプリの中で動きます。</i></sub>
 
@@ -283,7 +283,7 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
 <table>
 <tr>
 <td width="50%" align="center" valign="top">
-  <a href="docs/screenshots/clip-studio.webp"><img src="docs/screenshots/clip-studio.webp" alt="Clip Studio — カッティングベンチ" /></a>
+  <a href="docs/screenshots/clipper-bench.webp"><img src="docs/screenshots/clipper-bench.webp" alt="Clip Studio — カッティングベンチ" /></a>
   <sub><b>Clip Studio — カッティングベンチ</b><br/>元動画そのもののフレームをドラッグ。音声レーン、文境界へのスナップ、IN/OUT プレビュー、入力できるタイムコード。Cut を押すまで何もレンダリングされません。</sub>
 </td>
 <td width="50%" align="center" valign="top">
