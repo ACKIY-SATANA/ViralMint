@@ -4,7 +4,7 @@
 import json
 import logging
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -371,9 +371,83 @@ def _safe_resolve_path(path_str: str) -> Path:
     return resolved
 
 
+# MIME by suffix. This helper also serves Library image and audio assets, so
+# it cannot assume video/mp4 — a .png streamed as application/octet-stream is
+# rejected by anything that checks `blob.type`.
+_MEDIA_TYPES = {
+    ".mp4": "video/mp4", ".webm": "video/webm", ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime", ".avi": "video/x-msvideo",
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+    ".ogg": "audio/ogg", ".flac": "audio/flac",
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".gif": "image/gif",
+    # Tool outputs are not all media: subtitle exports, transcripts and
+    # metadata dumps come through the same Library asset route.
+    ".srt": "text/plain", ".vtt": "text/vtt", ".txt": "text/plain",
+    ".json": "application/json",
+}
+
+
+def serve_media_with_range(path: Path, request, filename: str | None = None):
+    """Serve a media file with HTTP Range support, bounding open-ended ranges.
+
+    Every scrubbing surface goes through here — the Clipper bench's player,
+    the Library players, clip previews. The header parsing (and the reason an
+    open-ended `bytes=N-` must NOT be answered to EOF) lives in
+    `core.http_range`, which is the only place that decision is made.
+
+    `request` is the Starlette Request; it is untyped here so callers that
+    only have the header do not have to import it.
+    """
+    from starlette.responses import StreamingResponse
+
+    from backend.core.http_range import RangeNotSatisfiable, parse_range
+
+    file_size = path.stat().st_size
+    media_type = _MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+
+    try:
+        rng = parse_range(request.headers.get("range"), file_size)
+    except RangeNotSatisfiable as e:
+        raise HTTPException(status_code=416, detail=e.detail, headers=e.headers)
+
+    if rng is not None:
+        start, end = rng
+        content_length = end - start + 1
+
+        def iter_file():
+            with open(path, "rb") as f:
+                f.seek(start)
+                remaining = content_length
+                while remaining > 0:
+                    data = f.read(min(65536, remaining))
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        return StreamingResponse(
+            iter_file(),
+            status_code=206,
+            media_type=media_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+            },
+        )
+
+    # No Range at all (a download, a fetch) — FileResponse uses sendfile and
+    # never touches the worker pool, so it stays uncapped.
+    return FileResponse(
+        path, media_type=media_type, filename=filename,
+        headers={"Accept-Ranges": "bytes"},
+    )
+
+
 @router.get("/videos/{video_id}/stream")
-async def stream_video(video_id: str, db: AsyncSession = Depends(get_db)):
-    """Stream/serve the video file."""
+async def stream_video(video_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """Stream/serve the video file, with Range support for seeking."""
     result = await db.execute(
         select(GeneratedVideo).where(GeneratedVideo.id == video_id)
     )
@@ -385,7 +459,7 @@ async def stream_video(video_id: str, db: AsyncSession = Depends(get_db)):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Video file not found on disk")
 
-    return FileResponse(path, media_type="video/mp4", filename=f"{video.title or 'video'}.mp4")
+    return serve_media_with_range(path, request, filename=f"{video.title or 'video'}.mp4")
 
 
 @router.post("/videos/{video_id}/export")
@@ -503,7 +577,7 @@ async def get_thumbnail(video_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/videos/{video_id}/stream/{aspect}")
-async def stream_video_format(video_id: str, aspect: str, db: AsyncSession = Depends(get_db)):
+async def stream_video_format(video_id: str, aspect: str, request: Request, db: AsyncSession = Depends(get_db)):
     """Stream a specific aspect ratio version. aspect: 'original' or '16x9'."""
     result = await db.execute(
         select(GeneratedVideo).where(GeneratedVideo.id == video_id)
@@ -522,4 +596,5 @@ async def stream_video_format(video_id: str, aspect: str, db: AsyncSession = Dep
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail="Video file not found")
 
-    return FileResponse(path, media_type="video/mp4", filename=f"{video.title or 'video'}_{aspect}.mp4")
+    return serve_media_with_range(
+        path, request, filename=f"{video.title or 'video'}_{aspect}.mp4")

@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
-from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -1181,8 +1181,14 @@ async def get_downloaded_thumbnail(video_id: str):
 
 
 @router.get("/downloaded/{video_id}/stream")
-async def stream_downloaded(video_id: str):
-    """Stream/serve a downloaded video file."""
+async def stream_downloaded(video_id: str, request: Request):
+    """Stream a downloaded video with Range support for seeking.
+
+    Delegates to `videos.serve_media_with_range` — one implementation, one
+    place to get an open-ended `bytes=N-` right (rule #32). This route used to
+    answer with a plain FileResponse, which is fine for a download and wrong
+    for the cutting bench, whose whole interaction is seeking.
+    """
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(DownloadedVideo).where(DownloadedVideo.id == video_id)
@@ -1199,4 +1205,5 @@ async def stream_downloaded(video_id: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Video file not found on disk")
 
-    return FileResponse(path, media_type="video/mp4")
+    from backend.api.videos import serve_media_with_range
+    return serve_media_with_range(path, request, filename=path.name)

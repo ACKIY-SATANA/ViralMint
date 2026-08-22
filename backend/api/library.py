@@ -23,7 +23,7 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,16 +41,9 @@ logger = logging.getLogger(__name__)
 # all, which is handled at the callsite rather than by lowering the seek.
 POSTER_SEEK_SECONDS = 2.0
 
-# MIME by suffix for the asset endpoint. Anything unlisted still gets its bytes,
-# just without a content-aware Content-Type.
-SUFFIX_MEDIA_TYPE = {
-    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
-    ".webp": "image/webp", ".gif": "image/gif",
-    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
-    ".mp4": "video/mp4", ".webm": "video/webm",
-    ".srt": "text/plain", ".vtt": "text/vtt", ".txt": "text/plain",
-    ".json": "application/json",
-}
+# MIME by suffix used to live here as a second copy. It is `videos._MEDIA_TYPES`
+# now — the same map the range-aware streamer picks a Content-Type from, so an
+# asset cannot be typed one way when downloaded and another when scrubbed.
 
 
 @router.get("/items")
@@ -230,19 +223,20 @@ async def resolve_asset_path(job_id: str, db: AsyncSession) -> Path:
 
 
 @router.get("/asset/{job_id}")
-async def stream_asset(job_id: str, db: AsyncSession = Depends(get_db)):
+async def stream_asset(job_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     """Stream a tool output — the tile's preview, the drawer's player, and the
-    only download the Library offers for a file no other route serves."""
+    only download the Library offers for a file no other route serves.
+
+    Range-aware via the shared helper: the drawer's player scrubs these, and a
+    media element that cannot seek re-downloads the file to move the playhead.
+    """
     path = await resolve_asset_path(job_id, db)
-    return FileResponse(
-        path,
-        media_type=SUFFIX_MEDIA_TYPE.get(path.suffix.lower(), "application/octet-stream"),
-        filename=path.name,
-    )
+    from backend.api.videos import serve_media_with_range
+    return serve_media_with_range(path, request, filename=path.name)
 
 
 @router.get("/track/{filename}")
-async def stream_track(filename: str):
+async def stream_track(filename: str, request: Request):
     """Stream a background-music file from storage/music/.
 
     There is no music router here — tracks are files you drop into that
@@ -262,11 +256,8 @@ async def stream_track(filename: str):
         raise HTTPException(status_code=400, detail="Bad track name")
     if not candidate.is_file() or candidate.suffix.lower() not in MUSIC_EXTS:
         raise HTTPException(status_code=404, detail="Track not found")
-    return FileResponse(
-        candidate,
-        media_type=SUFFIX_MEDIA_TYPE.get(candidate.suffix.lower(), "audio/mpeg"),
-        filename=candidate.name,
-    )
+    from backend.api.videos import serve_media_with_range
+    return serve_media_with_range(candidate, request, filename=candidate.name)
 
 
 def _drop_poster_cache(job_id: str) -> None:
