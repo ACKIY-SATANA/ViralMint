@@ -103,24 +103,29 @@ async def test_a_landscape_image_renders_a_landscape_frame(tmp_path):
 def test_a_pan_keeps_moving_for_its_whole_duration(tmp_path, effect):
     """The regression proof for the frozen pan.
 
-    A frozen pan is a perfectly valid H.264 file, so the only honest test is
-    to render one over a horizontal gradient — where any horizontal travel
-    changes the mean brightness — and check EVERY interval moves.
+    A frozen pan is a perfectly valid H.264 file, so the only honest test
+    renders one and looks at the pixels. The metric is mean absolute
+    difference between decoded frames over a busy `testsrc2` pattern —
+    deliberately NOT mean brightness, which saturates at both ends of a
+    gradient and reads a moving pan as stationary.
 
-    Measured on this gradient with the OLD expressions, which overshot
-    zoompan's own clamp of `iw - iw/zoom`:
+    Measured on this fixture (MAD per half, 0-255 scale):
 
-        pan_left  t=0.00 0.75 1.50 -> 178.44 178.44 178.44   (pinned, delta 0)
-        pan_right t=1.50 2.25 2.90 -> 178.08 178.08 178.08   (pinned, delta 0)
+        pan_left  old: first 0.32  second 104.73   <- pinned, then lurched
+                  new: first 67.88 second  64.08
+        pan_right old: first 108.29 second 0.00    <- ran out, then stopped
+                  new: first 68.11 second 63.88
 
     Both directions matter and testing one hides the other: the reversed
-    expressions (`*(1-on/d)`) start beyond the clamp and are frozen at the
-    START, the forward ones (`*on/d`) run past it and freeze at the END.
+    expressions (`*(1-on/d)`) start beyond zoompan's clamp and are frozen at
+    the START, the forward ones (`*on/d`) run past it and freeze at the END.
     """
-    src = tmp_path / "grad.png"
+    Image = pytest.importorskip("PIL.Image", reason="Pillow needed to read pixels")
+    from PIL import ImageChops, ImageStat
+
+    src = tmp_path / "busy.png"
     subprocess.run(
-        ["ffmpeg", "-y", "-f", "lavfi",
-         "-i", "gradients=s=2160x3840:c0=black:c1=white:x0=0:y0=0:x1=2160:y1=0",
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=s=2160x3840",
          "-frames:v", "1", str(src)],
         capture_output=True, timeout=30, check=True,
     )
@@ -134,35 +139,28 @@ def test_a_pan_keeps_moving_for_its_whole_duration(tmp_path, effect):
         capture_output=True, timeout=180, check=True,
     )
 
-    def _mean_at(t: float) -> float:
+    def _frame_at(t: float):
         png = tmp_path / f"f_{t}.png"
         subprocess.run(
             ["ffmpeg", "-y", "-ss", str(t), "-i", str(clip),
              "-frames:v", "1", str(png)],
             capture_output=True, timeout=60, check=True,
         )
-        out = subprocess.run(
-            ["ffmpeg", "-i", str(png), "-vf",
-             "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
-             "-f", "null", "-"],
-            capture_output=True, text=True, timeout=60,
-        )
-        for line in out.stderr.splitlines():
-            if "YAVG" in line:
-                return float(line.split("=")[-1])
-        raise AssertionError("could not read YAVG")
+        return Image.open(png).convert("L")
 
-    start, mid, end = (_mean_at(t) for t in (0.0, 1.5, 2.9))
+    start, mid, end = (_frame_at(t) for t in (0.0, 1.5, 2.9))
 
-    # The defect is a frozen HALF, so both halves have to move. Under the old
-    # expressions one of them was pinned to a delta of exactly 0.00.
-    first_half = abs(mid - start)
-    second_half = abs(end - mid)
-    assert first_half > 1.0, (
-        f"{effect} is frozen for its first half "
-        f"(delta {first_half:.2f}; track {start:.2f} {mid:.2f} {end:.2f})"
+    def _moved(a, b) -> float:
+        return ImageStat.Stat(ImageChops.difference(a, b)).mean[0]
+
+    # The defect is a frozen HALF. Old measured 0.00-0.32 there; new measures
+    # 63-68 in every half, so the threshold has two orders of magnitude of room.
+    first_half, second_half = _moved(start, mid), _moved(mid, end)
+    assert first_half > 5.0, (
+        f"{effect} is frozen for its first half (MAD {first_half:.2f}, "
+        f"second half {second_half:.2f})"
     )
-    assert second_half > 1.0, (
-        f"{effect} is frozen for its second half "
-        f"(delta {second_half:.2f}; track {start:.2f} {mid:.2f} {end:.2f})"
+    assert second_half > 5.0, (
+        f"{effect} is frozen for its second half (MAD {second_half:.2f}, "
+        f"first half {first_half:.2f})"
     )
