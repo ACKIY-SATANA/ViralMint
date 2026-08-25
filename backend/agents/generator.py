@@ -54,6 +54,7 @@ class GeneratorAgent:
         music_genre: str = None,
         custom_script: str = None,
         start_image: str = None,
+        user_images: list[str] = None,
         visual_style: str = None,
         transition_style: str = None,
         **_ignored,  # absorb deprecated kwargs (gen_tier, video_model, operation_type, etc.)
@@ -127,6 +128,7 @@ class GeneratorAgent:
             video_path = await self._generate_video(
                 script, voice_path, aspect_ratio, user_settings, start_image=start_image,
                 visual_style=visual_style, transition_style=transition_style,
+                user_images=user_images,
             )
 
             if not video_path:
@@ -578,23 +580,40 @@ class GeneratorAgent:
 
     # ── Video generation ────────────────────────────────────────────────
 
-    async def _generate_video(self, script: str, voice_path: Path, aspect_ratio: str, user_settings, start_image: str = None, visual_style: str = None, transition_style: str = None) -> Path:
-        """Generate video: Pexels stock footage → Ken Burns image → text fallback."""
+    async def _generate_video(self, script: str, voice_path: Path, aspect_ratio: str, user_settings, start_image: str = None, visual_style: str = None, transition_style: str = None, user_images: list[str] = None) -> Path:
+        """Generate video: Pexels stock footage → Ken Burns image → text fallback.
+
+        `start_image` and `user_images` are two different asks and only one
+        can win. A start image means "make the WHOLE video out of this one
+        picture"; user images mean "put these into the scenes of a normal
+        stock video". Where both arrive, the per-scene ask is the one that
+        keeps the script's structure, so it takes precedence.
+        """
         result = None
 
-        # Ken Burns from start image (if provided)
-        if start_image:
+        # Ken Burns from start image (if provided, and not superseded)
+        if start_image and not user_images:
             try:
                 result = await generate_kenburns_video(start_image, voice_path, aspect_ratio)
             except Exception as e:
                 logger.warning(f"Ken Burns video generation failed: {e}")
 
-        # Pexels stock footage
+        # Pexels stock footage, with the user's own images filling scenes
         if not result:
             try:
-                result = await generate_stock_video(script, voice_path, aspect_ratio, user_settings, visual_style=visual_style, transition_style=transition_style)
+                result = await generate_stock_video(script, voice_path, aspect_ratio, user_settings, visual_style=visual_style, transition_style=transition_style, user_images=user_images)
             except Exception as e:
                 logger.warning(f"Stock video generation failed: {e}")
+
+        # A start image that was superseded above is still better than the
+        # text fallback below. This rung matters when every per-scene image
+        # turned out to be unusable — the user offered two pictures and we
+        # should not end up showing them neither.
+        if not result and start_image:
+            try:
+                result = await generate_kenburns_video(start_image, voice_path, aspect_ratio)
+            except Exception as e:
+                logger.warning(f"Ken Burns fallback failed: {e}")
 
         # Text-on-background fallback
         if not result:

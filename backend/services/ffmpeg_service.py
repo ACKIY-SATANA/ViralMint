@@ -9,7 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 from backend.config import settings
 from backend.core.exceptions import VideoGenerationError
-from backend.services.video_utils import probe_duration
+from backend.services.video_utils import cover_vf, probe_dimensions, probe_duration
 
 
 def _tmp(name: str) -> Path:
@@ -482,6 +482,135 @@ async def generate_text_video(
     return await asyncio.to_thread(_generate)
 
 
+# Longest edge a normalized still may keep. The Ken Burns chain scales it to
+# 2x the output frame anyway, so anything above this is decoded, held in
+# memory and thrown away — a 108 MP camera PNG is ~400 MB of RGB for ONE frame.
+MAX_STILL_DIMENSION = 4096
+
+
+def _capped_still_dimensions(width: int, height: int) -> tuple[int, int]:
+    """Scale (width, height) down so the longest edge fits MAX_STILL_DIMENSION,
+    preserving aspect. Dimensions stay even — odd ones break some encoders."""
+    longest = max(width, height)
+    if longest <= MAX_STILL_DIMENSION or longest <= 0:
+        out_w, out_h = width, height
+    else:
+        scale = MAX_STILL_DIMENSION / longest
+        out_w = max(2, int(width * scale))
+        out_h = max(2, int(height * scale))
+    return out_w - (out_w % 2), out_h - (out_h % 2)
+
+
+def _normalize_still_sync(src: Path, dst: Path) -> tuple[int, int]:
+    """Write ONE opaque, bounded, single-frame RGB PNG at `dst`.
+
+    Deliberately a single ffmpeg invocation over a black `color` source rather
+    than a straight transcode, because DROPPING an alpha channel and
+    COMPOSITING one are different operations and only the second is correct.
+    The Ken Burns chain ends on `format=yuv420p`, which discards alpha and
+    leaves whatever RGB happened to sit underneath — so a background-removed
+    cut-out rendered as a garbage-fringed subject with no error anywhere.
+    Probed on a white disc cut out over hidden green: the transparent field
+    came back (0, 127, 0) before this pass and (0, 0, 0) after.
+
+    Overlaying onto black is a no-op for the opaque images that are the common
+    case, so every still can take the same path. It also gives us frame 0 of
+    an animated GIF/WebP for free, and caps a camera-sized panorama before it
+    ever reaches zoompan.
+
+    Returns the normalized (width, height).
+    """
+    src, dst = Path(src), Path(dst)
+    width, height = probe_dimensions(src)
+    if width <= 0 or height <= 0:
+        raise VideoGenerationError(
+            f"Couldn't read that image: no still frame in {src.name}"
+        )
+
+    out_w, out_h = _capped_still_dimensions(width, height)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        # An infinite black canvas at the target size...
+        "-f", "lavfi", "-i", f"color=c=black:s={out_w}x{out_h}",
+        "-i", str(src),
+        "-filter_complex",
+        # ...with the (possibly transparent, possibly animated) source scaled
+        # onto it. `shortest` plus `-frames:v 1` together make this frame 0 of
+        # a GIF/animated WebP and the only frame of a still.
+        f"[1:v]scale={out_w}:{out_h}:flags=lanczos[fg];"
+        # `format=rgb` composites in RGB — blending straight onto the YUV
+        # canvas tints the semi-transparent edge pixels of a cut-out.
+        f"[0:v][fg]overlay=shortest=1:format=rgb,format=rgb24",
+        "-frames:v", "1",
+        str(dst),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+        dst.unlink(missing_ok=True)
+        raise VideoGenerationError(
+            "Couldn't read that image: "
+            f"{(result.stderr or '').strip()[-200:] or 'ffmpeg failed'}"
+        )
+    return out_w, out_h
+
+
+async def normalize_still(src: Path, dst: Path) -> tuple[int, int]:
+    """Async wrapper for _normalize_still_sync. See its docstring."""
+    return await asyncio.to_thread(_normalize_still_sync, src, dst)
+
+
+# ── Ken Burns motion grammar ───────────────────────────────────────────────
+
+_KENBURNS_EFFECTS = ["zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up"]
+
+
+def _kenburns_image_vf(effect: str, frames: int, out_w: int, out_h: int, fps: int) -> str:
+    """Build the FFmpeg -vf chain that turns a still image into a Ken Burns
+    clip of exactly (out_w x out_h).
+
+    ONE motion grammar, ONE place to fix it — shared by every still-to-video
+    path so a fix here cannot reach one of them and miss the other.
+
+    Two bugs this builder is the fix for:
+
+    1. DISTORTION. The old chain scaled with `scale=8000:-1` (preserving the
+       SOURCE aspect) and then leaned on zoompan's `s=WxH`. But zoompan's crop
+       window keeps the INPUT aspect and `s=` anamorphically STRETCHES it to
+       the output size, so any image whose aspect differs from the target
+       (a square photo into a 9:16 video, a phone panorama into 16:9) came out
+       visibly squeezed or elongated. Fix: cover-crop to the target aspect
+       FIRST, at 2x target resolution for subpixel-smooth motion. zoompan's
+       window then has the same aspect as `s=` and the scale is distortion-free.
+
+    2. FROZEN PANS. The pan expressions used `(iw/1.3 - out_w)` as the travel
+       range — mixing input-space pixels (iw) with output-space pixels (out_w).
+       That range overshoots zoompan's own clamp of `iw - iw/zoom`, so a "pan"
+       sat pinned against one edge for the first half of its duration and then
+       lurched across. The correct travel range is `(iw - iw/zoom)`.
+
+    2x target is also plenty of headroom for smooth zoompan; the old 8000px
+    wide scale decoded and held a huge intermediate frame for no visible gain.
+    """
+    if effect == "zoom_in":
+        zp = f"z='1+0.5*on/{frames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+    elif effect == "zoom_out":
+        zp = f"z='1.5-0.5*on/{frames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+    elif effect == "pan_left":
+        zp = f"z='1.3':x='(iw-iw/zoom)*(1-on/{frames})':y='ih/2-(ih/zoom/2)'"
+    elif effect == "pan_right":
+        zp = f"z='1.3':x='(iw-iw/zoom)*on/{frames}':y='ih/2-(ih/zoom/2)'"
+    else:  # pan_up
+        zp = f"z='1.3':x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(1-on/{frames})'"
+
+    pre_w, pre_h = out_w * 2, out_h * 2
+    return (
+        f"{cover_vf(pre_w, pre_h, setsar=False)},"
+        f"zoompan={zp}:d={frames}:s={out_w}x{out_h}:fps={fps},"
+        f"format=yuv420p"
+    )
+
+
 async def generate_kenburns_video(
     image_paths: list[Path],
     audio_path: Path = None,
@@ -534,35 +663,36 @@ async def generate_kenburns_video(
         per_image = max(total_duration // len(image_paths), 3)
         frames_per_image = per_image * fps
 
-        effects = ["zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up"]
         tmp_clips = []
+        # Normalized copies of the source stills — scratch, deleted alongside
+        # the clips below.
+        tmp_stills: list[Path] = []
 
         for idx, img_path in enumerate(image_paths):
-            effect = random.choice(effects)
+            effect = random.choice(_KENBURNS_EFFECTS)
             clip_path = _tmp(f"kb_clip_{idx:03d}.mp4")
 
-            # zoompan filter expressions (d = total frames for this image)
-            d = frames_per_image
-            if effect == "zoom_in":
-                zp = f"z='1+0.5*on/{d}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-            elif effect == "zoom_out":
-                zp = f"z='1.5-0.5*on/{d}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-            elif effect == "pan_left":
-                zp = f"z='1.3':x='(iw/1.3-{out_w})*(1-on/{d})':y='ih/2-(ih/zoom/2)'"
-            elif effect == "pan_right":
-                zp = f"z='1.3':x='(iw/1.3-{out_w})*on/{d}':y='ih/2-(ih/zoom/2)'"
-            else:  # pan_up
-                zp = f"z='1.3':x='iw/2-(iw/zoom/2)':y='(ih/1.3-{out_h})*(1-on/{d})'"
+            # Normalize FIRST — the chain below ends on `format=yuv420p`,
+            # which discards alpha instead of compositing it, so a
+            # background-removed cut-out would render as a garbage-fringed
+            # subject with no error. Normalizing here rather than at the
+            # caller means no still-image entry point can forget to.
+            try:
+                norm_path = _tmp(f"kb_norm_{idx:03d}.png")
+                _normalize_still_sync(img_path, norm_path)
+                tmp_stills.append(norm_path)
+                img_path = norm_path
+            except Exception as e:
+                logger.warning(
+                    f"Ken Burns still {idx} could not be normalized "
+                    f"({img_path}): {e} — using it as-is"
+                )
 
-            # Scale source image to high res for zoompan, then apply effect
             cmd = [
                 "ffmpeg", "-y",
                 "-i", str(img_path),
-                "-vf", (
-                    f"scale=8000:-1,"
-                    f"zoompan={zp}:d={d}:s={out_w}x{out_h}:fps={fps},"
-                    f"format=yuv420p"
-                ),
+                "-vf", _kenburns_image_vf(
+                    effect, frames_per_image, out_w, out_h, fps),
                 "-c:v", "libx264", "-preset", "fast", "-crf", "20",
                 "-t", str(per_image),
                 str(clip_path),
@@ -649,7 +779,7 @@ async def generate_kenburns_video(
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if result.returncode == 0:
                 # Clean up temp clips
-                for clip in tmp_clips:
+                for clip in tmp_clips + tmp_stills:
                     clip.unlink(missing_ok=True)
                 if final_video != output_path:
                     final_video.unlink(missing_ok=True)
@@ -658,11 +788,68 @@ async def generate_kenburns_video(
         # No audio or merge failed — move video to output
         import shutil
         shutil.move(str(final_video), str(output_path))
-        for clip in tmp_clips:
+        for clip in tmp_clips + tmp_stills:
             clip.unlink(missing_ok=True)
         return output_path
 
     return await asyncio.to_thread(_generate)
+
+
+async def generate_single_kenburns_clip(
+    image_path: Path,
+    duration: float,
+    output_path: Path,
+    target_w: int = 1080,
+    target_h: int = 1920,
+    fps: int = 30,
+    normalize: bool = True,
+) -> Path:
+    """Turn ONE still into ONE silent clip of exactly `duration` seconds at
+    target_w x target_h, with a Ken Burns move.
+
+    The per-scene counterpart to generate_kenburns_video, which owns a whole
+    video: this one produces a clip that stitches alongside stock footage, so
+    it must land on the same geometry and carry no audio track.
+
+    `normalize=False` is for callers that already ran normalize_still() —
+    typically because they needed to know whether the image was READABLE
+    before committing to a plan around it, and re-running the pass would be
+    pure duplicated work. Everyone else should leave it on; see
+    normalize_still's docstring for what goes wrong without it.
+    """
+    image_path, output_path = Path(image_path), Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    scratch: Path | None = None
+    if normalize:
+        scratch = _tmp(f"kb_one_{uuid4().hex[:6]}.png")
+        await normalize_still(image_path, scratch)
+        image_path = scratch
+
+    def _generate():
+        frames = max(1, int(duration * fps))
+        effect = random.choice(_KENBURNS_EFFECTS)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(image_path),
+            "-vf", _kenburns_image_vf(effect, frames, target_w, target_h, fps),
+            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+            "-t", str(duration),
+            "-an",
+            str(output_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if result.returncode != 0 or not output_path.exists():
+            raise VideoGenerationError(
+                f"Ken Burns clip failed: {result.stderr[:300]}"
+            )
+        return output_path
+
+    try:
+        return await asyncio.to_thread(_generate)
+    finally:
+        if scratch is not None:
+            scratch.unlink(missing_ok=True)
 
 
 async def apply_auto_zoom(

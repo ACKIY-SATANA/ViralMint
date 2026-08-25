@@ -9,6 +9,7 @@ import json
 import logging
 import subprocess
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 
@@ -16,6 +17,11 @@ from backend.services.video_utils import probe_duration
 
 from backend.config import settings
 from backend.core.exceptions import VideoGenerationError
+from backend.core.ws_manager import ws_manager
+from backend.services.ffmpeg_service import (
+    generate_single_kenburns_clip,
+    normalize_still,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +29,11 @@ PEXELS_API = "https://api.pexels.com"
 
 # Shared httpx client — connection pooling across all Pexels calls
 _http = httpx.AsyncClient(timeout=30, follow_redirects=True, limits=httpx.Limits(max_connections=10))
+
+# Most scenes one video is cut into. Past this the cuts come faster than an
+# idea can land, and it is also the ceiling on how many of the user's own
+# images a single video can hold.
+MAX_SCENES = 12
 
 # Minimum acceptable resolution for stock clips
 MIN_WIDTH_PORTRAIT = 720
@@ -303,17 +314,26 @@ async def build_stock_video(
     output_path: Path = None,
     visual_style: str = None,
     transition_style: str = None,
+    user_images: list[Path] | None = None,
 ) -> Path:
     """
     Full stock footage video pipeline:
     1. AI extracts visual scene descriptions from script (one per ~7s of audio)
-    2. Search Pexels for each scene with quality filtering
-    3. Download best-matching HD clips
-    4. Normalize all clips to consistent resolution
-    5. Trim clips to match voice timing — total MUST equal voice duration
-    6. Stitch clips with smooth transitions
-    7. Merge voice audio (video loops if needed to match full audio)
+    2. Any images the user brought claim the opening scenes
+    3. Search Pexels for the REMAINING scenes with quality filtering
+    4. Download best-matching HD clips
+    5. Normalize all clips to consistent resolution
+    6. Trim clips to match voice timing — total MUST equal voice duration
+    7. Stitch clips with smooth transitions
+    8. Merge voice audio (video loops if needed to match full audio)
     Returns final video path.
+
+    `user_images` are stills the user supplied. Each one claims a scene in
+    order, starting at scene 0 — the hook, which is the scene most worth
+    giving to the creator's own material — and is animated into it with a Ken
+    Burns move for exactly that scene's slot. Scenes with no user image fall
+    to Pexels as before, and no Pexels search is even ISSUED for a scene an
+    image already owns.
     """
     if output_path is None:
         output_path = settings.GENERATED_DIR / f"stock_{hash(script) & 0xFFFFFFFF:08x}.mp4"
@@ -332,9 +352,34 @@ async def build_stock_video(
 
     logger.info(f"Voice duration: {voice_duration:.1f}s — building stock video to match")
 
-    # Step 1: Extract visual scenes — one per ~10 seconds for cinematic pacing
-    # Fewer, longer clips look more professional than rapid-fire cuts
-    num_scenes = max(3, min(12, int(voice_duration / 10)))
+    # Step 1a: Normalize the user's own images BEFORE anything is planned
+    # around them. This is what makes a still safe to animate (see
+    # ffmpeg_service.normalize_still), and doing it first means an unreadable
+    # file is one image fewer rather than a scene that renders to nothing —
+    # the scene falls back to stock exactly as if it had never been claimed.
+    ready_images: list[Path] = []
+    for img in (user_images or []):
+        try:
+            norm = settings.TMP_DIR / f"user_still_{len(ready_images):03d}_{uuid4().hex[:8]}.png"
+            await normalize_still(img, norm)
+            ready_images.append(norm)
+        except Exception as e:
+            logger.warning(f"User image unusable, falling back to stock for its scene ({img}): {e}")
+            await ws_manager.send_constraint_warning(
+                constraint="user_image_unreadable",
+                message=(
+                    f"Couldn't read \"{Path(img).name}\" — that scene will use "
+                    f"stock footage instead."
+                ),
+                severity="warning",
+            )
+
+    # Step 1b: Extract visual scenes — one per ~10 seconds for cinematic pacing
+    # Fewer, longer clips look more professional than rapid-fire cuts.
+    # The user's images raise the FLOOR on the scene count: bringing 8 images
+    # to a 30-second script would otherwise give 3 scenes and silently use 3
+    # of the 8. The ceiling of 12 still holds — see the warning below.
+    num_scenes = max(3, min(MAX_SCENES, max(int(voice_duration / 10), len(ready_images))))
     if ai_client:
         scenes = await extract_visual_scenes(script, ai_client, num_scenes=num_scenes)
     else:
@@ -349,18 +394,56 @@ async def build_stock_video(
             q = (s.get("query") or "").strip()
             s["query"] = f"{q} {mood}".strip()
 
+    # The scene grid has to be at least as big as the number of images the
+    # user brought, or their last photos are silently dropped. `num_scenes` is
+    # only a REQUEST — the AI extractor can return fewer, and the no-AI
+    # fallback below ignores it entirely and derives scenes from the script's
+    # own long words. So the floor is enforced here, after the fact, where
+    # both branches have already produced their answer.
+    while len(scenes) < min(len(ready_images), MAX_SCENES):
+        scenes.append({"query": "cinematic b-roll", "mood": "neutral",
+                       "priority": len(scenes) + 1})
+    scenes = scenes[:MAX_SCENES]
+
     logger.info(f"Stock video: {len(scenes)} scenes for {voice_duration:.0f}s video: {[s.get('query') for s in scenes]}")
 
-    # Step 2: Search clips for all scenes (parallel search, then parallel download)
-    clip_paths = []
-    clip_actual_durations = []
+    # Which scene each user image owns. In order from scene 0; anything past
+    # the scene count cannot be placed, and the user is told rather than left
+    # to notice their last photos missing from the finished video.
+    images_by_scene: dict[int, Path] = {
+        i: img for i, img in enumerate(ready_images[:len(scenes)])
+    }
+    if len(ready_images) > len(scenes):
+        unused = len(ready_images) - len(scenes)
+        logger.info(f"{unused} user image(s) beyond the {len(scenes)}-scene grid — not placed")
+        await ws_manager.send_constraint_warning(
+            constraint="user_images_over_scene_count",
+            message=(
+                f"This script only has room for {len(scenes)} scenes, so "
+                f"{unused} of your images weren't used. A longer script fits more."
+            ),
+            severity="info",
+        )
+
+    # Step 2: Search clips for the scenes no image claimed (parallel search,
+    # then parallel download)
     used_video_ids = set()
+
+    # Scene index -> (clip path, real duration). Keyed by SCENE rather than
+    # accumulated into a flat list because user stills and stock clips are
+    # produced by two different routes and have to interleave back into the
+    # script's own order at the end.
+    clips_by_scene: dict[int, tuple[Path, float]] = {}
 
     # Target duration per clip (will be redistributed later if some fail)
     target_per_clip = voice_duration / len(scenes) if scenes else 10
 
     # Phase A: Search all scenes in parallel to find clip URLs
     async def _search_scene(i: int, scene: dict) -> tuple[int, dict | None]:
+        # A scene the user's own image owns costs no Pexels quota and no
+        # download — it is never searched for in the first place.
+        if i in images_by_scene:
+            return i, None
         query = scene.get("query", "")
         if not query:
             return i, None
@@ -399,7 +482,7 @@ async def build_stock_video(
             chosen_clips.append((i, chosen))
 
     # Phase B: Download and process all clips in parallel
-    async def _download_and_process(i: int, chosen: dict) -> tuple[Path | None, float]:
+    async def _download_and_process(i: int, chosen: dict) -> tuple[int, Path | None, float]:
         try:
             clip_raw = settings.TMP_DIR / f"pexels_raw_{i:03d}.mp4"
             await download_clip(chosen["download_url"], clip_raw)
@@ -416,10 +499,10 @@ async def build_stock_video(
             if clip_raw != trimmed:
                 clip_raw.unlink(missing_ok=True)
 
-            return trimmed, actual_dur
+            return i, trimmed, actual_dur
         except Exception as e:
             logger.warning(f"Failed to download/process clip {i}: {e}")
-            return None, 0
+            return i, None, 0
 
     # Run downloads in parallel (limit concurrency to 4 to avoid hammering Pexels)
     sem = asyncio.Semaphore(4)
@@ -431,10 +514,40 @@ async def build_stock_video(
     download_tasks = [_limited_download(i, chosen) for i, chosen in chosen_clips]
     download_results = await asyncio.gather(*download_tasks)
 
-    for path, dur in download_results:
+    for i, path, dur in download_results:
         if path:
-            clip_paths.append(path)
-            clip_actual_durations.append(dur)
+            clips_by_scene[i] = (path, dur)
+
+    # Step 3: Animate each user still into the scene it claimed. One Ken Burns
+    # pass gives it both its motion and exactly the scene's slot, so it stitches
+    # against the stock clips with no further normalization — and NOT the
+    # trim-and-normalize route the clips take, which would fight the zoom.
+    # normalize=False because these were normalized in step 1a.
+    for scene_idx, still in images_by_scene.items():
+        out = settings.TMP_DIR / f"user_scene_{scene_idx:03d}_{uuid4().hex[:6]}.mp4"
+        try:
+            clip = await generate_single_kenburns_clip(
+                image_path=still, duration=target_per_clip, output_path=out,
+                target_w=target_w, target_h=target_h, normalize=False,
+            )
+        except Exception as e:
+            # One bad still costs its own scene, never the render. The scene
+            # simply has no clip; the loop-extension step below covers the gap.
+            logger.warning(f"Could not animate user image for scene {scene_idx}: {e}")
+            continue
+        # Probe rather than assume: the ledger below has to match what is
+        # actually on disk, or the video comes out shorter than the voice.
+        clips_by_scene[scene_idx] = (
+            clip, probe_duration(clip, default=target_per_clip),
+        )
+
+    # Flatten back into the script's own order.
+    ordered = [clips_by_scene[i] for i in sorted(clips_by_scene)]
+    clip_paths = [c for c, _d in ordered]
+    clip_actual_durations = [d for _c, d in ordered]
+
+    for still in ready_images:
+        still.unlink(missing_ok=True)
 
     if not clip_paths:
         logger.warning("No stock clips downloaded — cannot build stock video")

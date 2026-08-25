@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- **Bring your own images into a Smart Video.** The studio could take one
+  picture, and only as an all-or-nothing swap: it became the entire video and
+  no stock footage appeared at all. There is now a **Your Images** panel in the
+  studio rail — add as many photos as you like and each one fills a scene, in
+  the order you added them, starting with the hook. Every scene you didn't
+  cover still gets stock footage matched to that line of the script. Each photo
+  is animated with a slow zoom or pan rather than sitting still, and it is
+  fitted to the video's shape rather than stretched into it. Bringing more
+  photos than the script has scenes for makes the video cut more often so they
+  all fit; past twelve, you're told which ones couldn't be placed instead of
+  finding them missing later. If a photo turns out to be unreadable, or has
+  gone missing since you picked it, that scene falls back to stock footage and
+  says so.
 - **A cutting bench in Clip Studio.** Selecting a source video used to blank
   the centre of the page — it only drew something once a *clip* was selected,
   so picking a video with no clips yet, which is when you most need a
@@ -73,6 +86,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   grey block.
 
 ### Fixed
+- **Photos with a transparent background rendered as garbage.** Any image
+  taken into a video had its transparency *discarded* rather than filled in,
+  which left whatever colour happened to be hiding underneath — so a cut-out
+  subject came out surrounded by a fringe of it, in a file with nothing
+  otherwise wrong. Transparency is now flattened onto black first. The same
+  pass takes the first frame of an animated GIF instead of failing on it, and
+  scales a camera-sized photo down before the renderer has to hold all of it
+  in memory.
+- **Photos were stretched, and slow pans stopped halfway.** A picture whose
+  shape didn't match the video's — a square photo in a vertical short, a
+  panorama in a widescreen one — came out visibly squeezed or elongated. And a
+  panning shot spent half its time as a still frame before lurching across,
+  because the pan was told to travel further than the renderer would allow.
+  Both are fixed, and every image-to-video path in the app shares one
+  implementation of the movement now.
 - **Video scrubbing.** No media route honoured the `Range` header, so dragging
   through a long podcast made the browser re-fetch far more than it needed and,
   depending on the version of the server library underneath, could hand back
