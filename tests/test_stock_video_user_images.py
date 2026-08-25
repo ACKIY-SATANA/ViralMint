@@ -351,3 +351,57 @@ class TestNoPexelsKey:
                 user_images=["/nope/gone.png", str(img)])
 
         assert build.call_args.kwargs["user_images"] == [img]
+
+
+class TestNothingGoesMissingQuietly:
+    """The whole feature is "your own photos are in the video". Every path
+    that drops one has to say so."""
+
+    async def test_a_reference_that_went_stale_is_reported(self, tmp_path):
+        import backend.agents.generator_video as gv
+
+        warned = []
+
+        async def fake_warn(constraint=None, message=None, severity=None, **k):
+            warned.append((constraint, message))
+
+        img = _image(tmp_path / "a.png")
+        with patch.object(gv.settings, "PEXELS_API_KEY", "k"), \
+             patch.object(gv.ws_manager, "send_constraint_warning", side_effect=fake_warn), \
+             patch("backend.services.pexels_service.build_stock_video",
+                   AsyncMock(return_value=Path("/out.mp4"))):
+            await gv.generate_stock_video(
+                "script", None, "9:16", None,
+                user_images=["/api/media/swept-away.png", str(img)])
+
+        assert [c for c, _m in warned] == ["user_image_missing"]
+        assert "swept-away.png" in warned[0][1]
+
+    async def test_a_superseded_start_image_is_still_a_fallback(self):
+        """Per-scene images take precedence, but if every one of them turns
+        out to be unusable the user offered two pictures and must not end up
+        seeing neither."""
+        from backend.agents.generator import GeneratorAgent
+
+        with patch("backend.agents.generator.generate_stock_video",
+                   AsyncMock(return_value=None)), \
+             patch("backend.agents.generator.generate_kenburns_video",
+                   AsyncMock(return_value=Path("/kb.mp4"))) as kb:
+            out = await GeneratorAgent()._generate_video(
+                "script", None, "9:16", None,
+                start_image="/api/media/a.png", user_images=["/api/media/gone.png"],
+            )
+
+        assert out == Path("/kb.mp4")
+        kb.assert_awaited_once()
+
+    async def test_the_text_fallback_still_wins_when_there_is_no_image_at_all(self):
+        from backend.agents.generator import GeneratorAgent
+
+        with patch("backend.agents.generator.generate_stock_video",
+                   AsyncMock(return_value=None)), \
+             patch("backend.services.ffmpeg_service.generate_text_video",
+                   AsyncMock(return_value=Path("/text.mp4"))):
+            out = await GeneratorAgent()._generate_video("script", None, "9:16", None)
+
+        assert out == Path("/text.mp4")

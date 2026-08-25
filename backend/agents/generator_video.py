@@ -14,6 +14,7 @@ from pathlib import Path
 from backend.config import settings
 from backend.core.ai_provider import get_ai_client
 from backend.core.exceptions import GenerationError
+from backend.core.ws_manager import ws_manager
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,20 @@ async def generate_stock_video(
     for ref in (user_images or []):
         path = resolve_still_input(ref)
         if path is None:
+            # Say it out loud. Uploads live in the scratch dir, so a reference
+            # CAN go stale between picking the image and hitting Generate —
+            # and a photo quietly missing from the finished video is the exact
+            # failure this feature must not have. Same treatment as an
+            # unreadable file gets further down the pipeline.
             logger.warning("User image not found, skipping: %s", ref)
+            await ws_manager.send_constraint_warning(
+                constraint="user_image_missing",
+                message=(
+                    f"Couldn't find \"{Path(ref).name}\" any more — that scene "
+                    f"will use stock footage instead. Try adding it again."
+                ),
+                severity="warning",
+            )
             continue
         resolved_images.append(path)
 

@@ -605,6 +605,16 @@ class GeneratorAgent:
             except Exception as e:
                 logger.warning(f"Stock video generation failed: {e}")
 
+        # A start image that was superseded above is still better than the
+        # text fallback below. This rung matters when every per-scene image
+        # turned out to be unusable — the user offered two pictures and we
+        # should not end up showing them neither.
+        if not result and start_image:
+            try:
+                result = await generate_kenburns_video(start_image, voice_path, aspect_ratio)
+            except Exception as e:
+                logger.warning(f"Ken Burns fallback failed: {e}")
+
         # Text-on-background fallback
         if not result:
             logger.info("Stock video unavailable — using text-on-background fallback")
