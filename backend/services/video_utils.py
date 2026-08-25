@@ -86,3 +86,22 @@ def aspect_label(file_path: Path | str, default: str = "9:16") -> str:
     """
     w, h, _ = probe_media(file_path)
     return aspect_from_dims(w, h, default=default)
+
+
+def cover_vf(target_w: int, target_h: int, setsar: bool = True) -> str:
+    """FFmpeg filter chain that fills target_w x target_h without distortion.
+
+    Scales up until BOTH dimensions are covered (`increase`), then centre-crops
+    the overflow. This is the "cover" behaviour a CSS `object-fit: cover` gives
+    you, and it is the only correct pre-step before `zoompan`: zoompan's crop
+    window inherits the INPUT aspect and its `s=WxH` then anamorphically
+    STRETCHES it, so anything reaching zoompan must already be at the target
+    aspect.
+
+    `setsar` is off for chains that continue into another filter which sets it.
+    """
+    chain = (
+        f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
+        f"crop={target_w}:{target_h}"
+    )
+    return f"{chain},setsar=1" if setsar else chain

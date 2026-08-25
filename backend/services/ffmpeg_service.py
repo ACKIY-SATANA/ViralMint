@@ -9,7 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 from backend.config import settings
 from backend.core.exceptions import VideoGenerationError
-from backend.services.video_utils import probe_duration
+from backend.services.video_utils import cover_vf, probe_duration
 
 
 def _tmp(name: str) -> Path:
@@ -482,6 +482,57 @@ async def generate_text_video(
     return await asyncio.to_thread(_generate)
 
 
+# ── Ken Burns motion grammar ───────────────────────────────────────────────
+
+_KENBURNS_EFFECTS = ["zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up"]
+
+
+def _kenburns_image_vf(effect: str, frames: int, out_w: int, out_h: int, fps: int) -> str:
+    """Build the FFmpeg -vf chain that turns a still image into a Ken Burns
+    clip of exactly (out_w x out_h).
+
+    ONE motion grammar, ONE place to fix it — shared by every still-to-video
+    path so a fix here cannot reach one of them and miss the other.
+
+    Two bugs this builder is the fix for:
+
+    1. DISTORTION. The old chain scaled with `scale=8000:-1` (preserving the
+       SOURCE aspect) and then leaned on zoompan's `s=WxH`. But zoompan's crop
+       window keeps the INPUT aspect and `s=` anamorphically STRETCHES it to
+       the output size, so any image whose aspect differs from the target
+       (a square photo into a 9:16 video, a phone panorama into 16:9) came out
+       visibly squeezed or elongated. Fix: cover-crop to the target aspect
+       FIRST, at 2x target resolution for subpixel-smooth motion. zoompan's
+       window then has the same aspect as `s=` and the scale is distortion-free.
+
+    2. FROZEN PANS. The pan expressions used `(iw/1.3 - out_w)` as the travel
+       range — mixing input-space pixels (iw) with output-space pixels (out_w).
+       That range overshoots zoompan's own clamp of `iw - iw/zoom`, so a "pan"
+       sat pinned against one edge for the first half of its duration and then
+       lurched across. The correct travel range is `(iw - iw/zoom)`.
+
+    2x target is also plenty of headroom for smooth zoompan; the old 8000px
+    wide scale decoded and held a huge intermediate frame for no visible gain.
+    """
+    if effect == "zoom_in":
+        zp = f"z='1+0.5*on/{frames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+    elif effect == "zoom_out":
+        zp = f"z='1.5-0.5*on/{frames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+    elif effect == "pan_left":
+        zp = f"z='1.3':x='(iw-iw/zoom)*(1-on/{frames})':y='ih/2-(ih/zoom/2)'"
+    elif effect == "pan_right":
+        zp = f"z='1.3':x='(iw-iw/zoom)*on/{frames}':y='ih/2-(ih/zoom/2)'"
+    else:  # pan_up
+        zp = f"z='1.3':x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(1-on/{frames})'"
+
+    pre_w, pre_h = out_w * 2, out_h * 2
+    return (
+        f"{cover_vf(pre_w, pre_h, setsar=False)},"
+        f"zoompan={zp}:d={frames}:s={out_w}x{out_h}:fps={fps},"
+        f"format=yuv420p"
+    )
+
+
 async def generate_kenburns_video(
     image_paths: list[Path],
     audio_path: Path = None,
@@ -534,35 +585,17 @@ async def generate_kenburns_video(
         per_image = max(total_duration // len(image_paths), 3)
         frames_per_image = per_image * fps
 
-        effects = ["zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up"]
         tmp_clips = []
 
         for idx, img_path in enumerate(image_paths):
-            effect = random.choice(effects)
+            effect = random.choice(_KENBURNS_EFFECTS)
             clip_path = _tmp(f"kb_clip_{idx:03d}.mp4")
 
-            # zoompan filter expressions (d = total frames for this image)
-            d = frames_per_image
-            if effect == "zoom_in":
-                zp = f"z='1+0.5*on/{d}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-            elif effect == "zoom_out":
-                zp = f"z='1.5-0.5*on/{d}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-            elif effect == "pan_left":
-                zp = f"z='1.3':x='(iw/1.3-{out_w})*(1-on/{d})':y='ih/2-(ih/zoom/2)'"
-            elif effect == "pan_right":
-                zp = f"z='1.3':x='(iw/1.3-{out_w})*on/{d}':y='ih/2-(ih/zoom/2)'"
-            else:  # pan_up
-                zp = f"z='1.3':x='iw/2-(iw/zoom/2)':y='(ih/1.3-{out_h})*(1-on/{d})'"
-
-            # Scale source image to high res for zoompan, then apply effect
             cmd = [
                 "ffmpeg", "-y",
                 "-i", str(img_path),
-                "-vf", (
-                    f"scale=8000:-1,"
-                    f"zoompan={zp}:d={d}:s={out_w}x{out_h}:fps={fps},"
-                    f"format=yuv420p"
-                ),
+                "-vf", _kenburns_image_vf(
+                    effect, frames_per_image, out_w, out_h, fps),
                 "-c:v", "libx264", "-preset", "fast", "-crf", "20",
                 "-t", str(per_image),
                 str(clip_path),
