@@ -795,6 +795,63 @@ async def generate_kenburns_video(
     return await asyncio.to_thread(_generate)
 
 
+async def generate_single_kenburns_clip(
+    image_path: Path,
+    duration: float,
+    output_path: Path,
+    target_w: int = 1080,
+    target_h: int = 1920,
+    fps: int = 30,
+    normalize: bool = True,
+) -> Path:
+    """Turn ONE still into ONE silent clip of exactly `duration` seconds at
+    target_w x target_h, with a Ken Burns move.
+
+    The per-scene counterpart to generate_kenburns_video, which owns a whole
+    video: this one produces a clip that stitches alongside stock footage, so
+    it must land on the same geometry and carry no audio track.
+
+    `normalize=False` is for callers that already ran normalize_still() —
+    typically because they needed to know whether the image was READABLE
+    before committing to a plan around it, and re-running the pass would be
+    pure duplicated work. Everyone else should leave it on; see
+    normalize_still's docstring for what goes wrong without it.
+    """
+    image_path, output_path = Path(image_path), Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    scratch: Path | None = None
+    if normalize:
+        scratch = _tmp(f"kb_one_{uuid4().hex[:6]}.png")
+        await normalize_still(image_path, scratch)
+        image_path = scratch
+
+    def _generate():
+        frames = max(1, int(duration * fps))
+        effect = random.choice(_KENBURNS_EFFECTS)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(image_path),
+            "-vf", _kenburns_image_vf(effect, frames, target_w, target_h, fps),
+            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+            "-t", str(duration),
+            "-an",
+            str(output_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if result.returncode != 0 or not output_path.exists():
+            raise VideoGenerationError(
+                f"Ken Burns clip failed: {result.stderr[:300]}"
+            )
+        return output_path
+
+    try:
+        return await asyncio.to_thread(_generate)
+    finally:
+        if scratch is not None:
+            scratch.unlink(missing_ok=True)
+
+
 async def apply_auto_zoom(
     video_path: Path,
     word_timestamps: list[dict],
