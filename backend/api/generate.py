@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from backend.database import AsyncSessionLocal
@@ -45,6 +45,10 @@ class StockGenerateRequest(BaseModel):
     source_id: Optional[str] = None
     scenes: Optional[list[StockScene]] = None
     start_image: Optional[str] = None
+    # The user's own stills. Each claims a scene in order from the hook; the
+    # rest of the scenes still come from Pexels. Bounded so one request cannot
+    # queue an unbounded number of renders — the scene grid caps at 12 anyway.
+    user_images: list[str] = Field(default_factory=list, max_length=12)
 
 
 class SplitScenesRequest(BaseModel):
@@ -105,6 +109,7 @@ async def generate_stock(body: StockGenerateRequest):
         music_enabled=body.music_enabled,
         music_genre=body.music_genre,
         start_image=body.start_image,
+        user_images=body.user_images,
     )
 
 

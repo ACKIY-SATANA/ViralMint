@@ -2,7 +2,8 @@
 # Copyright (c) 2025-2026 ViralMint Contributors
 """Video generation strategy helpers for the generator pipeline.
 
-Generates videos using Pexels stock footage matched to script content.
+Generates videos using Pexels stock footage matched to script content, with
+the user's own images filling scenes where they supplied any.
 Falls back to Ken Burns image zoom or text-on-background if Pexels is unavailable.
 Called from GeneratorAgent._generate_video().
 """
@@ -17,11 +18,61 @@ from backend.core.exceptions import GenerationError
 logger = logging.getLogger(__name__)
 
 
-async def generate_stock_video(script: str, voice_path: Path, aspect_ratio: str, user_settings, visual_style: str = None, transition_style: str = None) -> Path:
-    """Pexels stock footage matched to script keywords."""
+def resolve_still_input(reference: str) -> Path | None:
+    """Turn one image reference from a request into a path on this machine.
+
+    Two forms, and only two — every still-image field in the studio speaks the
+    same small vocabulary so a reference that works in one field works in all
+    of them:
+
+      * `/api/media/<name>` — something uploaded through /api/media/upload.
+        Resolved under TMP_DIR by BASENAME, so a reference carrying `..` or an
+        absolute path cannot escape the upload directory.
+      * anything else — a path on this machine. ViralMint is a local
+        self-hosted app whose user already owns the filesystem, so this is
+        deliberately not restricted further.
+
+    Returns None when the reference doesn't resolve to a file that exists;
+    callers decide whether that is fatal or just one image fewer.
+    """
+    if not reference:
+        return None
+
+    if reference.startswith("/api/media/"):
+        # Basename only — `Path(x).name` strips traversal the same way
+        # /api/media/{filename} does when it serves these back.
+        candidate = settings.TMP_DIR / Path(reference).name
+        return candidate if candidate.exists() else None
+
+    candidate = Path(reference)
+    return candidate if candidate.exists() else None
+
+
+async def generate_stock_video(
+    script: str,
+    voice_path: Path,
+    aspect_ratio: str,
+    user_settings,
+    visual_style: str = None,
+    transition_style: str = None,
+    user_images: list[str] | None = None,
+) -> Path:
+    """Pexels stock footage matched to script keywords, with any images the
+    user brought filling the opening scenes."""
     pexels_key = settings.PEXELS_API_KEY
 
-    if not pexels_key:
+    resolved_images: list[Path] = []
+    for ref in (user_images or []):
+        path = resolve_still_input(ref)
+        if path is None:
+            logger.warning("User image not found, skipping: %s", ref)
+            continue
+        resolved_images.append(path)
+
+    # Pexels is what fills the scenes the user did NOT bring an image for. With
+    # no key AND no images there is nothing to build a video out of; with
+    # images we can still build one entirely from them.
+    if not pexels_key and not resolved_images:
         logger.info("Pexels API key not configured — skipping stock footage tier")
         return None
 
@@ -41,6 +92,7 @@ async def generate_stock_video(script: str, voice_path: Path, aspect_ratio: str,
         ai_client=ai_client,
         visual_style=visual_style,
         transition_style=transition_style,
+        user_images=resolved_images,
     )
 
 
@@ -48,16 +100,8 @@ async def generate_kenburns_video(start_image: str, voice_path: Path, aspect_rat
     """Image-to-video: apply Ken Burns zoom/pan effects to user-provided image."""
     from backend.services.ffmpeg_service import generate_kenburns_video as _kenburns
 
-    image_path = None
-    if start_image.startswith("/api/media/"):
-        filename = start_image.split("/")[-1]
-        candidate = settings.TMP_DIR / filename
-        if candidate.exists():
-            image_path = candidate
+    image_path = resolve_still_input(start_image)
     if image_path is None:
-        image_path = Path(start_image)
-
-    if not image_path.exists():
         raise GenerationError(f"Start image not found: {start_image}")
 
     output_path = settings.GENERATED_DIR / f"kenburns_{hashlib.md5(str(image_path).encode()).hexdigest()[:8]}.mp4"

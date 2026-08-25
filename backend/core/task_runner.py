@@ -72,6 +72,7 @@ async def run_generate(
     music_genre: str = None,
     custom_script: str = None,
     start_image: str = None,
+    user_images: list[str] = None,
     visual_style: str = None,
     transition_style: str = None,
     **_ignored,  # absorb deprecated params (gen_tier, video_model, etc.)
@@ -86,7 +87,7 @@ async def run_generate(
             caption_style=caption_style,
             caption_enabled=caption_enabled, music_enabled=music_enabled,
             music_genre=music_genre, custom_script=custom_script,
-            start_image=start_image,
+            start_image=start_image, user_images=user_images,
             visual_style=visual_style, transition_style=transition_style,
         )
         logger.info("TASK DONE  generate | job=%s", job_id[:8])

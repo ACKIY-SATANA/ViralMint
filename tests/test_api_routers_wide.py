@@ -402,6 +402,37 @@ class TestGenerate:
         assert r.status_code == 200, r.text
         assert "job_id" in r.json()
 
+    def test_stock_generation_forwards_the_users_own_images(self, client):
+        """The field has to reach the runner. A request body that parses but
+        drops a field looks identical to one that works."""
+        from unittest.mock import patch
+        with patch("backend.core.task_runner.dispatch") as dispatch:
+            r = client.post("/api/generate/stock",
+                            json={"script": "A short script about cats.",
+                                  "user_images": ["/api/media/a.png",
+                                                  "/api/media/b.png"]})
+        assert r.status_code == 200, r.text
+        coro = dispatch.call_args.args[0]
+        assert coro.cr_frame.f_locals["user_images"] == [
+            "/api/media/a.png", "/api/media/b.png"]
+        coro.close()
+
+    def test_stock_generation_defaults_to_no_user_images(self, client):
+        from unittest.mock import patch
+        with patch("backend.core.task_runner.dispatch") as dispatch:
+            client.post("/api/generate/stock", json={"script": "Cats."})
+        coro = dispatch.call_args.args[0]
+        assert coro.cr_frame.f_locals["user_images"] == []
+        coro.close()
+
+    def test_stock_generation_rejects_an_unbounded_pile_of_images(self, client):
+        """One request must not be able to queue an arbitrary number of
+        renders; the scene grid caps at 12 anyway."""
+        r = client.post("/api/generate/stock",
+                        json={"script": "Cats.",
+                              "user_images": [f"/api/media/{i}.png" for i in range(50)]})
+        assert r.status_code == 422, r.text
+
     def test_splitting_scenes_needs_a_script(self, client):
         assert client.post("/api/generate/split-scenes",
                            json={}).status_code in (400, 422)
