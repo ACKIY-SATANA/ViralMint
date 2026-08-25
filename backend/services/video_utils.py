@@ -105,3 +105,32 @@ def cover_vf(target_w: int, target_h: int, setsar: bool = True) -> str:
         f"crop={target_w}:{target_h}"
     )
     return f"{chain},setsar=1" if setsar else chain
+
+
+def probe_dimensions(file_path: Path | str) -> tuple[int, int]:
+    """Get (width, height) for any media file, still images included.
+
+    Deliberately NOT `probe_media`: that one asks for `format=duration` in the
+    same call and a still image reports `N/A` there, so the float() fails and
+    the whole probe degrades to (0, 0, 0.0) — an image looks like an
+    unreadable file. Returns (0, 0) on real failure.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(file_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        parts = [p for p in result.stdout.strip().splitlines() if p.strip()]
+        if len(parts) < 2:
+            return 0, 0
+        return int(parts[0]), int(parts[1])
+    except Exception:
+        return 0, 0
