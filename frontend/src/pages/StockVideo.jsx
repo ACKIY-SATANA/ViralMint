@@ -49,6 +49,7 @@ export default function StockVideo() {
   const [aspectRatio, setAspectRatio] = useState("9:16")
   const [operation, setOperation] = useState("t2v")
   const [startImage, setStartImage] = useState(null)
+  const [userImages, setUserImages] = useState([])
   const [ttsProvider, setTtsProvider] = useState("edge_tts")
   const [captionEnabled, setCaptionEnabled] = useState(true)
   const [captionStyle, setCaptionStyle] = useState("viral")
@@ -141,6 +142,10 @@ export default function StockVideo() {
         music_genre: musicEnabled ? musicGenre : undefined,
         source_id: sourceId || undefined,
         start_image: operation === "i2v" ? startImage : undefined,
+        // Mirrors the rail, which only offers one of the two image controls:
+        // "Image" mode means one picture becomes the WHOLE video, so the
+        // per-scene images are not also sent.
+        user_images: operation === "i2v" ? [] : userImages,
       }
       await http.post("/api/generate/stock", body)
       showSnackbar("Stock video generation started!", "success")
@@ -322,8 +327,10 @@ export default function StockVideo() {
           aspectRatio={aspectRatio} setAspectRatio={setAspectRatio}
           operation={operation} setOperation={setOperation}
           startImage={startImage} setStartImage={setStartImage}
+          userImages={userImages} setUserImages={setUserImages}
           transitionStyle={transitionStyle} setTransitionStyle={setTransitionStyle}
           audioProps={audioProps} ttsProvider={ttsProvider} script={script}
+          onError={(msg) => showSnackbar(msg, "warning")}
         />
       </Box>
 

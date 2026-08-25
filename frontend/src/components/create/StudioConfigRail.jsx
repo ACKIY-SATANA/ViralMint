@@ -12,6 +12,7 @@ import { STYLES, StyleSwatch } from "./SmartVideoStyles"
 import AudioConfig from "./AudioConfig"
 import EstimatedCost from "./EstimatedCost"
 import ImageUpload from "./ImageUpload"
+import UserImagesPanel from "./UserImagesPanel"
 
 // Transition presets the stock pipeline can honor when stitching clips.
 export const TRANSITIONS = [
@@ -41,8 +42,9 @@ export default function StudioConfigRail({
   aspectRatio, setAspectRatio,
   operation, setOperation,
   startImage, setStartImage,
+  userImages, setUserImages,
   transitionStyle, setTransitionStyle,
-  audioProps, ttsProvider, script,
+  audioProps, ttsProvider, script, onError,
 }) {
   return (
     <Box sx={{ width: { xs: 300, lg: 344 }, flexShrink: 0, overflowY: "auto", overflowX: "hidden", p: 1.75, height: "100%" }}>
@@ -86,6 +88,22 @@ export default function StudioConfigRail({
             </Box>
           )}
         </Panel>
+
+        {/* The user's own stills, filling scenes of an otherwise-stock video.
+            Only offered in Script → Video: the Image mode above is the
+            all-or-nothing version of the same idea (one picture becomes the
+            whole video), and showing both invites picking two answers to one
+            question. The backend resolves the clash the same way — per-scene
+            images win — but the UI should never create it. */}
+        {operation !== "i2v" && (
+          <Panel title="Your Images">
+            <UserImagesPanel
+              images={userImages}
+              setImages={setUserImages}
+              onError={onError}
+            />
+          </Panel>
+        )}
 
         {/* Voice, captions & music — reuse the OSS AudioConfig (BYOK/edge providers) */}
         <Panel sx={{ p: 1.5 }}>
