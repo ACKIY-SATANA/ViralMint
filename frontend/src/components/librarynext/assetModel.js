@@ -38,6 +38,12 @@ export const ORIGINS = {
     label: "Created",
     hint: "Made in ViralMint from a prompt, script or brief",
     light: "#c96442",   // brand terracotta — the app's own act of making
+    // Text-only step-down. Decoration and text have different contrast floors
+    // — 3:1 vs 4.5:1 — and the brand terracotta falls between them: measured
+    // 3.44:1 on the light canvas. Fine for the rail and the dot, too faint for
+    // the word "CREATED" at 10px. Same hue, 15% less luminance, 4.56:1.
+    // Used ONLY by `originTextColor`; the rail keeps the brand colour.
+    textLight: "#aa5538",
     dark: "#e88a5a",
   },
   imported: {
@@ -63,6 +69,23 @@ export const ORIGIN_KEYS = ["created", "edited", "imported"]
 export function originColor(origin, isDark) {
   const o = ORIGINS[origin] || ORIGINS.created
   return isDark ? o.dark : o.light
+}
+
+/** The same provenance colour, safe to render small TEXT in.
+ *
+ * One of the three origin colours sits between the decoration floor and the
+ * text floor: brand terracotta measures 3.44:1 on the light canvas, fine for
+ * the rail and the dot, too faint for a 10px uppercase label. The other two
+ * clear 4.5:1 already and are returned unchanged.
+ *
+ * Deliberately NOT fixed by darkening `light` itself: that colour IS the brand
+ * terracotta, and the rail carrying it is the Library's provenance signal at a
+ * glance. Only the text steps down.
+ */
+export function originTextColor(origin, isDark) {
+  const o = ORIGINS[origin] || ORIGINS.created
+  if (isDark) return o.dark
+  return o.textLight || o.light
 }
 
 // ── The media axis ──────────────────────────────────────────────────────────

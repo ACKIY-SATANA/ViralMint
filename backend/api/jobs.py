@@ -41,18 +41,31 @@ async def list_jobs(
     limit: int = 20,
     offset: int = 0,
 ):
-    """List jobs, optionally filtered by status and/or type."""
+    """List jobs, optionally filtered by status and/or type.
+
+    `status` accepts a COMMA-SEPARATED list ("running,pending") as well as a
+    single value. The frontend's active-job restore wants exactly those two and
+    was issuing one request per status on every page load; one filter answers
+    both. A single value still means what it always did, so every existing
+    caller is unaffected.
+    """
     async with AsyncSessionLocal() as db:
-        base = select(Job).where(Job.user_id == "local")
-        if status:
-            base = base.where(Job.status == status)
+        statuses = [s.strip() for s in (status or "").split(",") if s.strip()]
+
+        # Built once and applied to BOTH the page query and the count. They
+        # used to be written out separately, which is the shape where a filter
+        # added to one silently makes `total` disagree with the rows.
+        filters = [Job.user_id == "local"]
+        if statuses:
+            filters.append(Job.status.in_(statuses))
         if job_type:
-            base = base.where(Job.job_type == job_type)
+            filters.append(Job.job_type == job_type)
+
+        base = select(Job).where(*filters)
 
         from sqlalchemy import func
-        total = (await db.execute(select(func.count(Job.id)).where(Job.user_id == "local")
-            .where(Job.status == status if status else True)
-            .where(Job.job_type == job_type if job_type else True)
+        total = (await db.execute(
+            select(func.count(Job.id)).where(*filters)
         )).scalar()
 
         query = base.order_by(Job.created_at.desc()).offset(offset).limit(limit)

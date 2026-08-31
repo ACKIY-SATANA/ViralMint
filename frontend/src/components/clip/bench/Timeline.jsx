@@ -19,6 +19,13 @@ import { formatTime } from "../clipFormat"
    listeners, so a drag that leaves the element still ends cleanly.
 */
 
+// The filmstrip lane is a FIXED dark plate (#0b0d12) in BOTH themes, because a
+// filmstrip sits on it — so the theme's text colours do not apply to it. In
+// light mode `text.disabled` resolves to a dark grey that measures 3.14:1 here,
+// i.e. unreadable, which is exactly what the lane's own status messages were
+// rendered in. 7.7:1 against the plate, in either theme.
+const LANE_TEXT = "#9aa4b5"
+
 const STRIP_H = 64      // filmstrip / range lane height
 const SPEECH_H = 12
 const GHOST_H = 8
@@ -62,6 +69,21 @@ export default function Timeline({
   const [drag, setDrag] = useState(null)   // {kind, id, rect, grabOffset, span}
   const [draft, setDraft] = useState(null) // {start, end} while drag-creating
   const [stripFailed, setStripFailed] = useState(false)
+  // A strip can fail for three quite different reasons and the difference is
+  // the whole message:
+  //   "ok"        ffmpeg hiccupped on an otherwise fine video — cosmetic, and
+  //               the bench really does still work.
+  //   "truncated" the file decodes its OPENING frames and nothing after: a
+  //               download that stopped part-way. Most of the timeline is
+  //               unusable even though the first seconds look fine.
+  //   "dead"      no readable video at all — a download cancelled mid-write
+  //               leaves a valid header, a plausible duration and no data.
+  // "the timeline still works" is true only in the first case; in the other
+  // two, playback, the IN/OUT frames and the cut itself all fail too. Two
+  // probes on the failure path tell them apart — the same two ends the strip
+  // builder itself checks — and they are free on the happy path because they
+  // never run there.
+  const [readable, setReadable] = useState("ok")
   // The sprite's true cell count, measured once it decodes (see below).
   const [stripCells, setStripCells] = useState(null)
   // Building a strip for a long source is a few seconds of ffmpeg the first
@@ -106,6 +128,31 @@ export default function Timeline({
   // return fewer cells than `n` — and every consumer of this sprite offsets
   // into it by cell index, so believing the request would skew the IN/OUT
   // proxy across the whole strip. Measuring the answer cannot drift.
+  // Ask for the FIRST and LAST frame when the strip fails. The endpoint decodes
+  // on demand and caches per 0.1s bucket, so each is one cheap request, and a
+  // truncated source is exactly the case a head-only probe gets wrong: its
+  // opening frames decode, so asking only about t=0 would report the file as
+  // healthy and print the reassurance over a timeline that mostly is not.
+  useEffect(() => {
+    if (!stripFailed || !sourceId) { setReadable("ok"); return }
+    let alive = true
+    const at = (t) => new Promise((resolve) => {
+      const img = new Image()
+      img.onload = () => resolve(true)
+      img.onerror = () => resolve(false)
+      img.src = `/api/downloaded/${sourceId}/frame?t=${t}&w=64`
+    })
+    // A hair inside the end: a container's duration runs to the END of its
+    // last frame, so seeking exactly there decodes nothing even on a healthy
+    // file — the same tail clamp the strip builder applies.
+    const tail = Math.max(0, (duration || 0) - 0.5)
+    Promise.all([at(0), at(tail.toFixed(2))]).then(([head, end]) => {
+      if (!alive) return
+      setReadable(!head ? "dead" : !end ? "truncated" : "ok")
+    })
+    return () => { alive = false }
+  }, [stripFailed, sourceId, duration])
+
   useEffect(() => {
     onStrip?.(strip && stripLoaded && !stripFailed
       ? { ...strip, cells: stripCells || strip.cells }
@@ -254,8 +301,8 @@ export default function Timeline({
               position: "absolute", inset: 0, justifyContent: "center",
               pointerEvents: "none",
             }}>
-              <CircularProgress size={14} thickness={5} sx={{ color: "text.disabled" }} />
-              <Typography variant="caption" sx={{ color: "text.disabled" }}>
+              <CircularProgress size={14} thickness={5} sx={{ color: LANE_TEXT }} />
+              <Typography variant="caption" sx={{ color: LANE_TEXT }}>
                 Reading frames from this video…
               </Typography>
             </Stack>
@@ -264,9 +311,14 @@ export default function Timeline({
             <Typography variant="caption" sx={{
               position: "absolute", inset: 0, display: "flex",
               alignItems: "center", justifyContent: "center",
-              color: "text.disabled", pointerEvents: "none",
+              textAlign: "center", px: 2,
+              color: LANE_TEXT, pointerEvents: "none",
             }}>
-              Preview frames unavailable — the timeline still works
+              {readable === "dead"
+                ? "This video has no readable frames — it may be an incomplete or cancelled download"
+                : readable === "truncated"
+                  ? "Only the beginning of this video is readable — it looks like an unfinished download, so most of the timeline won't play or cut"
+                  : "Preview frames unavailable — the timeline still works"}
             </Typography>
           )}
 

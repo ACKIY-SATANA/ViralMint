@@ -10,6 +10,7 @@ import VolumeUpOutlinedIcon from "@mui/icons-material/VolumeUpOutlined"
 import StopIcon from "@mui/icons-material/Stop"
 import http from "../../api/http"
 import useAppStore from "../../store/appStore"
+import { CAPTION_STYLES } from "../../components/tools/captionOptions"
 import ToolRunner from "../../components/tools/ToolRunner"
 import useDocumentTitle from "../../hooks/useDocumentTitle"
 
@@ -36,19 +37,29 @@ const LANGUAGES = [
   { code: "fi", name: "Finnish" },
 ]
 
-// Same voices as Voiceover. Kore/Puck lead — the recommended naturals.
-const OPENAI_VOICES = [
-  "Kore", "Puck", "Charon", "Zephyr", "Fenrir", "Leda",
-  "Orus", "Aoede", "Enceladus", "Despina", "Algieba", "Achernar", "Sulafat",
+// ⚠️ These have to be voices the DUB ENGINE accepts, and the dub runs on
+// Edge TTS. They used to be Gemini names (Kore, Puck, Zephyr, …), which
+// edge_tts rejects outright with `ValueError: Invalid voice 'Kore'` — so full
+// dub failed for every voice the page offered, whichever one you picked.
+// Derived from edge_tts_service.RECOMMENDED_VOICES and pinned by
+// tests/test_voice_vocabulary_parity.py. Multilingual voices lead: this is the
+// TRANSLATE page, and only they speak the target language.
+const DUB_VOICES = [
+  { id: "en-US-AndrewMultilingualNeural", label: "Andrew (Male, natural)" },
+  { id: "en-US-AvaMultilingualNeural", label: "Ava (Female, natural)" },
+  { id: "en-US-BrianMultilingualNeural", label: "Brian (Male, warm)" },
+  { id: "en-US-EmmaMultilingualNeural", label: "Emma (Female, clear)" },
+  { id: "en-US-AriaNeural", label: "Aria (Female, classic)" },
+  { id: "en-US-GuyNeural", label: "Guy (Male, classic)" },
+  { id: "en-US-JennyNeural", label: "Jenny (Female, friendly)" },
 ]
-const CAPTION_STYLES = ["viral", "classic", "bold"]
 
 export default function ToolTranslate() {
   useDocumentTitle("Translate + Dub")
   const showSnackbar = useAppStore((s) => s.showSnackbar)
   const [target, setTarget] = useState("es")
   const [mode, setMode] = useState("captions_only")  // "captions_only" | "full_dub"
-  const [voiceId, setVoiceId] = useState("Kore")
+  const [voiceId, setVoiceId] = useState(DUB_VOICES[0].id)
   const [captionStyle, setCaptionStyle] = useState("viral")
   const [emojiStyle, setEmojiStyle] = useState("moderate")
 
@@ -71,7 +82,10 @@ export default function ToolTranslate() {
     try {
       const res = await http.post(
         "/api/tts/preview",
-        { provider: "openai_tts", voice_id: voice },
+        // The dub runs on Edge TTS, so the preview must too — previewing
+        // one engine and dubbing with another is how the lists drifted
+        // apart in the first place.
+        { provider: "edge_tts", voice_id: voice },
         { responseType: "blob" },
       )
       const url = URL.createObjectURL(res.data)
@@ -173,14 +187,14 @@ export default function ToolTranslate() {
               value={voiceId}
               label="Voice (multilingual)"
               onChange={(e) => setVoiceId(e.target.value)}
-              renderValue={(v) => v}
+              renderValue={(v) => DUB_VOICES.find((d) => d.id === v)?.label || v}
             >
-              {OPENAI_VOICES.map((v) => {
+              {DUB_VOICES.map(({ id: v, label }) => {
                 const isPlaying = previewVoice === v
                 const isLoading = previewLoading === v
                 return (
                   <MenuItem key={v} value={v} sx={{ display: "flex", alignItems: "center", gap: 1, pr: 1 }}>
-                    <Box sx={{ flex: 1 }}>{v}</Box>
+                    <Box sx={{ flex: 1 }}>{label}</Box>
                     <Tooltip title={isPlaying ? "Stop preview" : "Preview voice"} placement="left" arrow>
                       <IconButton
                         size="small"
@@ -205,7 +219,7 @@ export default function ToolTranslate() {
           <FormControl size="small" sx={{ minWidth: 140 }}>
             <InputLabel>Caption style</InputLabel>
             <Select value={captionStyle} label="Caption style" onChange={(e) => setCaptionStyle(e.target.value)}>
-              {CAPTION_STYLES.map((s) => <MenuItem key={s} value={s}>{s}</MenuItem>)}
+              {CAPTION_STYLES.map((s) => <MenuItem key={s.value} value={s.value}>{s.label}</MenuItem>)}
             </Select>
           </FormControl>
           <FormControl size="small" sx={{ minWidth: 140 }}>

@@ -222,6 +222,29 @@ async def add_captions(
     return await asyncio.to_thread(_caption)
 
 
+def ffmpeg_error(stderr: str, limit: int = 400) -> str:
+    """The part of ffmpeg's stderr that says what went wrong.
+
+    ffmpeg prints ~200 characters of version banner and build configuration
+    BEFORE it says anything useful, so `stderr[:200]` logs a constant string
+    and throws the error away — every thumbnail failure logged the identical
+    "ffmpeg version 7.1 Copyright ... configuration: --prefix=" with no cause
+    attached.
+
+    Drops the banner and returns the tail, which is where the diagnosis lives
+    ("No such file or directory", "Invalid data found when processing input",
+    "moov atom not found").
+    """
+    if not stderr:
+        return "(no stderr)"
+    lines = [
+        ln for ln in stderr.splitlines()
+        if ln.strip() and not ln.startswith(("ffmpeg version", "  built with",
+                                             "  configuration:", "  lib"))
+    ]
+    return "\n".join(lines)[-limit:] if lines else stderr[-limit:]
+
+
 async def extract_thumbnail(
     video_path: Path,
     output_path: Path = None,
@@ -243,7 +266,8 @@ async def extract_thumbnail(
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            logger.warning(f"Thumbnail extraction failed: {result.stderr[:200]}")
+            logger.warning("Thumbnail extraction failed for %s: %s",
+                           video_path.name, ffmpeg_error(result.stderr))
             return None
         return output_path
 
@@ -1252,7 +1276,7 @@ async def extract_frame_at(
         if result.returncode != 0:
             logger.warning(
                 "Frame extract failed at t=%.2fs for %s: %s",
-                timestamp, video_path.name, result.stderr[:200],
+                timestamp, video_path.name, ffmpeg_error(result.stderr, 200),
             )
             return None
         if not output_path.exists() or output_path.stat().st_size == 0:
@@ -1365,10 +1389,50 @@ async def extract_filmstrip(
                     video_path=video_path, timestamp=retry, output_path=out, quality=6,
                 )
 
-        results = await asyncio.gather(
-            *(_one(i, ts) for i, ts in enumerate(stamps)),
+        # Probe the two ENDS before committing to the middle. A strip needs
+        # every cell (see the docstring — one with holes would mislead the user
+        # about where they are), so if either end fails the strip fails anyway
+        # and the other 30 spawns buy nothing. Without this, an unreadable
+        # source costs 2N ffmpeg spawns — every cell fails and every failure
+        # retries once — plus N log lines, and pays it again every time that
+        # source is selected, because the bench rebuilds the strip each visit.
+        #
+        # BOTH ends are probed, not just the first, because the two realistic
+        # damage shapes differ. A download cancelled mid-write leaves a valid
+        # header, a plausible duration and no usable data at all — that fails
+        # cell 0. A download truncated at the END still decodes its opening
+        # frames and fails everything after: measured on a 45s source cut to
+        # 7% of its bytes, cell 0 succeeded and 31 cells then failed for 61
+        # ffmpeg spawns. Probing the tail catches that one for two.
+        #
+        # Bailing on the tail is outcome-identical to running the full set:
+        # `_one` already retries a step-back for low-frame-rate sources, so a
+        # tail that fails here would have failed the `len(ok) < count` check
+        # below regardless.
+        last_i = len(stamps) - 1
+        first = await _one(0, stamps[0])
+        if not first:
+            logger.warning(
+                "filmstrip: %s decodes no frames — skipping the remaining %d "
+                "cells (corrupt or partially-downloaded source?)",
+                video_path.name, last_i,
+            )
+            return None
+
+        last = await _one(last_i, stamps[last_i]) if last_i else first
+        if not last:
+            logger.warning(
+                "filmstrip: %s decodes its opening frames but not its end — "
+                "skipping the remaining %d cells (truncated download?)",
+                video_path.name, max(0, last_i - 1),
+            )
+            return None
+
+        middle = await asyncio.gather(
+            *(_one(i, ts) for i, ts in enumerate(stamps) if 0 < i < last_i),
             return_exceptions=True,
         )
+        results = [first, last, *middle] if last_i else [first]
         ok = [r for r in results if r and not isinstance(r, Exception)]
         if len(ok) < count:
             logger.warning(

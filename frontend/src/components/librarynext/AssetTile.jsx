@@ -22,7 +22,7 @@ import ImageRoundedIcon from "@mui/icons-material/ImageRounded"
 import GraphicEqRoundedIcon from "@mui/icons-material/GraphicEqRounded"
 import DescriptionRoundedIcon from "@mui/icons-material/DescriptionRounded"
 import BoltRoundedIcon from "@mui/icons-material/BoltRounded"
-import { ORIGINS, originColor, fmtDay, waveformBars } from "./assetModel"
+import { ORIGINS, originColor, originTextColor, fmtDay, waveformBars } from "./assetModel"
 import { formatClock } from "../../utils/format"
 
 const MEDIA_ICON = {
@@ -62,6 +62,7 @@ export default function AssetTile({
   const active = hovered || focused
 
   const oc = originColor(item.origin, isDark)
+  const ocText = originTextColor(item.origin, isDark)
   const frameH = dense ? 112 : 148
   const MediaIcon = MEDIA_ICON[item.media] || MovieRoundedIcon
   const showPoster = (item.media === "video" || item.media === "image") && item.thumb_url && !broken
@@ -241,10 +242,12 @@ export default function AssetTile({
           {item.title}
         </Typography>
         <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mt: 0.4, minWidth: 0 }}>
+          {/* Text steps down to the readable variant; the dot beside it keeps
+              the brand colour (decoration clears its own 3:1 floor). */}
           <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: oc, flexShrink: 0 }} />
           <Typography sx={{
             fontSize: "0.62rem", fontWeight: 700, letterSpacing: "0.07em",
-            textTransform: "uppercase", color: oc, flexShrink: 0,
+            textTransform: "uppercase", color: ocText, flexShrink: 0,
           }}>
             {ORIGINS[item.origin]?.label}
           </Typography>
