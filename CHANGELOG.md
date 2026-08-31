@@ -199,6 +199,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   validated (and regenerated if invalid) at startup.
 
 ### Changed
+- **Dependencies refreshed, and one dropped for security.** FastAPI, uvicorn,
+  SQLAlchemy, Alembic, cryptography and the Anthropic and OpenAI SDKs were all
+  behind — the two AI SDKs and cryptography by a full major version or more,
+  because their version ceilings had never been raised. `python-jose` was
+  removed outright: nothing used it, and it was the only thing pulling in a
+  package with a published timing-attack advisory and no fixed release. A
+  fresh install now reports no known vulnerabilities. `moviepy` was also
+  removed — nothing imported it either, and the piece that actually mattered
+  (the bundled ffmpeg used by the packaged app) is now a dependency in its own
+  right rather than something inherited by accident.
+
 - **Fewer redundant requests on every page change.** Opening a page asked the
   app for the job list four times over; it now asks twice, and restoring
   in-progress work takes one request instead of two.

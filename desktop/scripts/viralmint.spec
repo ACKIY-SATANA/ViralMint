@@ -55,7 +55,10 @@ for pkg in ("neonize", "google.protobuf"):
     except Exception as exc:
         print(f"WARN: collect_all({pkg!r}) failed — {pkg} may not work in packaged build: {exc}")
 
-# moviepy → imageio_ffmpeg bundles static ffmpeg per platform.
+# imageio_ffmpeg bundles a static ffmpeg per platform. It is a DIRECT
+# requirement (requirements.txt) — it used to arrive via moviepy, which was
+# dropped as unused; without the direct dep this collect_all finds nothing
+# and the packaged app ships with no ffmpeg.
 d, b, h = collect_all("imageio_ffmpeg")
 datas += d
 binaries += b

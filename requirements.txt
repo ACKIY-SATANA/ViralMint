@@ -1,29 +1,43 @@
 # Web
-fastapi==0.136.3
-uvicorn[standard]==0.48.0
-python-multipart==0.0.29
-websockets==12.0
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+python-multipart==0.0.32
+# websockets is a uvicorn[standard] extra — nothing here imports it directly,
+# so the pin exists only to keep the WS transport reproducible.
+websockets==17.1
 
 # DB
-sqlalchemy[asyncio]==2.0.50
+sqlalchemy[asyncio]==2.0.52
 aiosqlite==0.22.1
-alembic==1.18.4
+alembic==1.19.1
 
 # Security
-cryptography>=46.0.6,<47
-python-dotenv==1.2.2
-pydantic-settings==2.14.1
+cryptography>=50.0.1,<51
+python-dotenv==1.2.3
+pydantic-settings==2.15.0
 
 # AI providers
-# Both bumped for httpx 0.28+ compat — older versions pass a `proxies` kwarg
-# that httpx 0.28 removed. neonize transitively requires httpx >=0.28.1, so
-# we can't pin httpx down. Fixed in anthropic 0.39 / openai 1.55.
-anthropic>=0.39.0,<1.0
-openai>=1.109.1,<2.0
+# Majors, and the caps are the load-bearing part: both SDKs ship breaking
+# changes on a major, so the ceiling stays one major above the floor and moves
+# deliberately. The floors are the versions this tree is tested against, not
+# the oldest that might work — a self-hosted install should not silently
+# resolve to an SDK nobody here has run.
+#
+# Verified against the three call sites in backend/core/ai_provider.py:
+# `AsyncAnthropic(api_key=)` + `messages.stream(model, max_tokens, system,
+# messages)`, and `AsyncOpenAI(api_key, timeout, base_url, default_headers)` +
+# `chat.completions.create(model, messages, stream, max_tokens |
+# max_completion_tokens)`. All present in anthropic 1.2.0 / openai 3.6.0.
+#
+# Both also need httpx >=0.28 (older SDKs passed a `proxies` kwarg httpx 0.28
+# removed); neonize requires httpx >=0.28.1 transitively, so httpx cannot be
+# pinned down anyway.
+anthropic>=1.2.0,<2.0
+openai>=3.6.0,<4.0
 
 # Scout
-google-api-python-client==2.196.0
-google-auth-oauthlib==1.4.0
+google-api-python-client==2.199.0
+google-auth-oauthlib==1.4.1
 pytrends==4.9.2
 
 # Download — yt-dlp + curl-cffi for browser TLS impersonation.
@@ -53,14 +67,21 @@ curl-cffi>=0.15
 faster-whisper
 
 # Video generation
-moviepy==1.0.3
+# This used to be `moviepy==1.0.3`, which nothing imported — it was four
+# majors stale and kept only because the PyInstaller spec collects
+# `imageio_ffmpeg` (moviepy's dependency) to bundle a static ffmpeg per
+# platform. Depend on that DIRECTLY instead: dropping moviepy without this
+# line would have produced a packaged app with no ffmpeg, which no test can
+# see because the source tree finds ffmpeg on PATH.
+# Verified: imageio-ffmpeg 0.6.0 ships a working ffmpeg 7.1.
+# (ffprobe is NOT included — desktop/scripts/fetch-ffprobe.sh vendors it.)
+imageio-ffmpeg>=0.6.0
+
 # Pillow >=12.2 closes 6 CVEs (CVE-2026-25990 / 40192 / 42308–11) found by
-# pip-audit on 2026-05-26. The Image.ANTIALIAS / Image.BICUBIC monkeypatch
-# in backend/main.py still applies — those constants alias
-# Image.Resampling.LANCZOS / BICUBIC, which are stable through Pillow 12.x.
-# moviepy 1.0.3 (legacy dep, no current imports — kept for compat) still
-# expects the removed ANTIALIAS constant; the patch handles that case.
-# If you ever drop moviepy from this file, the patch in main.py can go too.
+# pip-audit on 2026-05-26. The Image.ANTIALIAS monkeypatch that used to live
+# in backend/main.py went with moviepy — it existed solely because moviepy
+# 1.0.3 used constants Pillow 11 removed. Nothing in the tree, and nothing in
+# a resolved install, references them any more.
 Pillow>=12.2.0,<13.0
 
 # Multi-TTS providers
@@ -78,8 +99,11 @@ playwright>=1.59.0
 httpx>=0.28.1,<1.0
 aiohttp>=3.14.0,<4  # CVE-2026-34993, CVE-2026-47265
 
-# Utils
-python-jose==3.5.0
+# (`python-jose` was removed 2026-08-31: nothing in the tree imports it — this
+# variant has no JWT of its own, it is BYOK against provider APIs — and it was
+# the only path to `ecdsa`, which carries PYSEC-2026-1325 (Minerva timing
+# attack on P-256) with NO fixed version available. Removing the unused
+# dependency is the fix; there is nothing to upgrade to.)
 
 # Messaging channels
 python-telegram-bot>=22.0,<23.0

@@ -14,19 +14,6 @@ from backend.core.logging_config import setup_logging
 from backend.core import plugins
 from backend.database import init_db
 
-# Pillow 11 removed the legacy resampling constants (Image.ANTIALIAS, .BICUBIC, ...).
-# moviepy 1.0.3 still uses Image.ANTIALIAS internally. Re-add the constants as
-# aliases of the new Resampling enum so resize/clip operations don't crash.
-# Drop this shim if/when we move to moviepy 2.x.
-try:
-    from PIL import Image as _PIL_Image
-    if not hasattr(_PIL_Image, "ANTIALIAS"):
-        _PIL_Image.ANTIALIAS = _PIL_Image.Resampling.LANCZOS
-        _PIL_Image.BICUBIC = _PIL_Image.Resampling.BICUBIC
-        _PIL_Image.LINEAR = _PIL_Image.Resampling.BILINEAR
-        _PIL_Image.NEAREST = _PIL_Image.Resampling.NEAREST
-except Exception:
-    pass
 from backend.api import captions, channels, chat, chat_sessions, config as config_router, downloaded, generate, jobs, library, media, messaging as messaging_router, news, scout, settings as settings_router, templates, tools, tts_preview, videos
 
 # Initialize logging before anything else
