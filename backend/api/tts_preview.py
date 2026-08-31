@@ -44,6 +44,24 @@ _SAMPLES = [
 ]
 
 
+# Every click writes a fresh mp3 (the sample text is fresh, so caching would
+# defeat the point). Left alone that is an unbounded scratch tree with no owner
+# and no sweeper — the same shape as the bench's frame cache before it got one.
+# TMP_DIR itself must never be blanket-purged (it holds yt-dlp's cookie jar and
+# uploaded media), so this prunes its OWN directory and nothing else.
+_KEEP_PREVIEWS = 24
+
+
+def _prune_previews(preview_dir: Path) -> None:
+    """Keep the newest few samples; drop the rest. Never raises."""
+    try:
+        files = sorted(preview_dir.glob("*.mp3"), key=lambda f: f.stat().st_mtime, reverse=True)
+        for stale in files[_KEEP_PREVIEWS:]:
+            stale.unlink(missing_ok=True)
+    except OSError as e:
+        logger.debug("preview prune skipped: %s", e)
+
+
 class _PreviewBody(BaseModel):
     provider: str          # "edge_tts" | "openai_tts"
     voice_id: str
@@ -65,6 +83,7 @@ async def tts_preview(body: _PreviewBody):
     preview_dir = settings.TMP_DIR / "tts_previews"
     preview_dir.mkdir(parents=True, exist_ok=True)
     output_path: Path = preview_dir / f"{provider}_{voice_id}_{uuid4().hex[:8]}.mp3"
+    _prune_previews(preview_dir)
 
     try:
         if provider == "edge_tts":

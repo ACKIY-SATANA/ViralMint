@@ -233,3 +233,34 @@ async def _noop(*a, **kw):
 
 async def _raise(job_id, exc, *a, **kw):
     raise AssertionError(f"runner failed: {exc}")
+
+
+def test_the_preview_scratch_dir_is_bounded(tmp_path):
+    """Each click writes a fresh mp3 on purpose (fresh sample text), so the
+    directory grows forever unless something owns it. TMP_DIR must never be
+    blanket-purged — it holds the cookie jar and uploaded media — so the
+    preview route prunes its OWN directory and nothing else."""
+    from backend.api.tts_preview import _KEEP_PREVIEWS, _prune_previews
+
+    keep_me = tmp_path / "cookies.txt"
+    keep_me.write_text("not an mp3")
+    for i in range(_KEEP_PREVIEWS + 15):
+        f = tmp_path / f"edge_tts_v{i}_{i:04d}.mp3"
+        f.write_bytes(b"\xff\xfb")
+        import os
+        os.utime(f, (i, i))          # oldest first
+
+    _prune_previews(tmp_path)
+
+    left = sorted(tmp_path.glob("*.mp3"))
+    assert len(left) == _KEEP_PREVIEWS
+    assert keep_me.exists(), "the prune must only touch its own mp3s"
+    # The newest survive, not an arbitrary subset.
+    assert any(f"v{_KEEP_PREVIEWS + 14}_" in f.name for f in left)
+
+
+def test_pruning_a_missing_dir_is_not_an_error(tmp_path):
+    """It runs on the request path; a raise here would turn a working preview
+    into a 500."""
+    from backend.api.tts_preview import _prune_previews
+    _prune_previews(tmp_path / "does-not-exist")
