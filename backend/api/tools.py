@@ -498,9 +498,15 @@ async def enhance_prompt(
 async def voiceover_tool(
     text: str = Form(...),
     voice_id: Optional[str] = Form(None),
+    provider: str = Form("edge_tts"),
     video: Optional[UploadFile] = File(None),
 ):
-    """Generate a voice-over from a script using the local (free) Edge TTS.
+    """Generate a voice-over from a script.
+
+    `provider` is "edge_tts" (free, local) or "openai_tts" (your own key). It
+    used to be absent, so the page's provider picker was decorative and an
+    OpenAI voice id reached Edge TTS, which rejects it — the job simply failed.
+    A paid provider with no key degrades to Edge with a constraint warning.
 
     If a video is also uploaded, the voice is overlaid on top of it.
     """
@@ -514,7 +520,7 @@ async def voiceover_tool(
     from backend.core.task_runner import dispatch
     from backend.core.tool_runners import run_tool_voiceover
     job = await create_job("tool:voiceover", "local", {
-        "voice_id": voice_id, "chars": len(text),
+        "voice_id": voice_id, "provider": provider, "chars": len(text),
     })
 
     video_path = None
@@ -523,7 +529,7 @@ async def voiceover_tool(
 
     dispatch(run_tool_voiceover(
         job.id, text, voice_id or "",
-        video_path=video_path,
+        video_path=video_path, provider=provider,
     ))
     return {"job_id": job.id}
 

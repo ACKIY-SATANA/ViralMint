@@ -20,20 +20,31 @@ import useDocumentTitle from "../../hooks/useDocumentTitle"
 // endpoint is unreachable (e.g., backend down during page load). The live
 // list, when available, is much richer. These fallbacks keep the tool
 // usable as a last resort.
+// ⚠️ These must name voices the ENGINE accepts, and they used to name voices
+// no engine here has ever had: Kore / Puck / Charon / Leda / Orus are Gemini
+// names, and OpenAI's speech API rejects every one of them. Kept in step with
+// tts_service.list_voices by tests/test_voice_vocabulary_parity.py.
 const FALLBACK_OPENAI_VOICES = [
-  { voice_id: "Kore",   name: "Kore",   gender: "Female", desc: "Firm, clear (recommended)",    recommended: true },
-  { voice_id: "Puck",   name: "Puck",   gender: "Male",   desc: "Upbeat, lively (recommended)", recommended: true },
-  { voice_id: "Charon", name: "Charon", gender: "Male",   desc: "Informative, even" },
-  { voice_id: "Leda",   name: "Leda",   gender: "Female", desc: "Youthful, warm" },
-  { voice_id: "Orus",   name: "Orus",   gender: "Male",   desc: "Firm, steady" },
+  { voice_id: "alloy",   name: "Alloy",   gender: "Neutral", desc: "Balanced, neutral (recommended)", recommended: true },
+  { voice_id: "nova",    name: "Nova",    gender: "Female",  desc: "Bright, energetic (recommended)", recommended: true },
+  { voice_id: "echo",    name: "Echo",    gender: "Male",    desc: "Even, measured" },
+  { voice_id: "fable",   name: "Fable",   gender: "Neutral", desc: "Warm, British" },
+  { voice_id: "onyx",    name: "Onyx",    gender: "Male",    desc: "Deep, authoritative" },
+  { voice_id: "shimmer", name: "Shimmer", gender: "Female",  desc: "Soft, gentle" },
 ]
+// Regenerated FROM edge_tts_service.RECOMMENDED_VOICES rather than re-typed:
+// four of the six names had drifted (Brian "natural" vs "warm", Emma "natural"
+// vs "clear", Guy and Jenny carrying a locale where the engine gives a
+// description), so a voice renamed itself under the user the moment the live
+// list arrived.
 const FALLBACK_EDGE_VOICES = [
-  { voice_id: "en-US-AndrewMultilingualNeural", name: "⭐ Andrew (Male, natural)",  category: "Male",   locale: "en-US" },
-  { voice_id: "en-US-AvaMultilingualNeural",    name: "⭐ Ava (Female, natural)",   category: "Female", locale: "en-US" },
-  { voice_id: "en-US-BrianMultilingualNeural",  name: "⭐ Brian (Male, natural)",   category: "Male",   locale: "en-US" },
-  { voice_id: "en-US-EmmaMultilingualNeural",   name: "⭐ Emma (Female, natural)",  category: "Female", locale: "en-US" },
-  { voice_id: "en-US-GuyNeural",                name: "Guy (en-US)",                 category: "Male",   locale: "en-US" },
-  { voice_id: "en-US-JennyNeural",              name: "Jenny (en-US)",               category: "Female", locale: "en-US" },
+  { voice_id: "en-US-AndrewMultilingualNeural", name: "⭐ Andrew (Male, natural)", category: "Male", locale: "en-US" },
+  { voice_id: "en-US-AvaMultilingualNeural", name: "⭐ Ava (Female, natural)", category: "Female", locale: "en-US" },
+  { voice_id: "en-US-BrianMultilingualNeural", name: "⭐ Brian (Male, warm)", category: "Male", locale: "en-US" },
+  { voice_id: "en-US-EmmaMultilingualNeural", name: "⭐ Emma (Female, clear)", category: "Female", locale: "en-US" },
+  { voice_id: "en-US-AriaNeural", name: "⭐ Aria (Female, classic)", category: "Female", locale: "en-US" },
+  { voice_id: "en-US-GuyNeural", name: "⭐ Guy (Male, classic)", category: "Male", locale: "en-US" },
+  { voice_id: "en-US-JennyNeural", name: "⭐ Jenny (Female, friendly)", category: "Female", locale: "en-US" },
 ]
 
 // Blank-page starters — drop in a skeleton the user can fill, then "✨ Enhance"

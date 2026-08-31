@@ -1150,19 +1150,59 @@ async def run_tool_hook_analysis(job_id: str, in_path: Path, user_id: str = "loc
 async def run_tool_voiceover(
     job_id: str, text: str, voice_id: str,
     video_path: Path | None = None, user_id: str = "local",
+    provider: str = "edge_tts",
 ):
+    """Narrate a script, optionally over an uploaded video.
+
+    `provider` is honoured rather than ignored. The page has always offered
+    both providers, and this runner used to call Edge TTS unconditionally with
+    whatever `voice_id` arrived — so picking OpenAI handed Edge an id it does
+    not know ("alloy"), which edge_tts rejects with a bare ValueError and the
+    whole job failed. A paid provider with no key degrades to Edge and SAYS
+    so, the same rule the Smart Video pipeline follows: a render that speaks
+    in a voice the user did not pick must never be silent about it.
+    """
     from backend.api.tools import tool_out_path
+    from backend.config import settings
+    from backend.services.tts_service import (
+        DEFAULT_VOICES, PROVIDER_INFO, TTSProvider, generate_tts)
 
     logger.info("TASK START tool:voiceover | job=%s chars=%d", job_id[:8], len(text))
     cleanup: list[Path] = []
     if video_path:
         cleanup.append(video_path)
     try:
-        await _tool_progress(job_id, 30, "Generating voice (Edge TTS)...", user_id)
-        from backend.services.edge_tts_service import generate_voice
+        try:
+            tts_provider = TTSProvider(provider or "edge_tts")
+        except ValueError:
+            tts_provider = TTSProvider.EDGE_TTS
+
+        api_key = settings.OPENAI_API_KEY if tts_provider == TTSProvider.OPENAI_TTS else ""
+        if PROVIDER_INFO[tts_provider]["needs_key"] and not api_key:
+            from backend.core.ws_manager import ws_manager
+            await ws_manager.send_constraint_warning(
+                constraint="tts_fallback",
+                severity="warning",
+                message=(
+                    f"{PROVIDER_INFO[tts_provider]['label']} needs an API key — "
+                    f"add one in Settings to use it. Narrated with the free "
+                    f"Edge voice instead."
+                ),
+            )
+            tts_provider = TTSProvider.EDGE_TTS
+            voice_id = ""   # an OpenAI voice id is not an Edge voice id
+
+        label = PROVIDER_INFO[tts_provider]["label"]
+        await _tool_progress(job_id, 30, f"Generating voice ({label})...", user_id)
 
         mp3_path = tool_out_path(job_id, ".mp3")
-        await generate_voice(text, voice_id=voice_id or None, output_path=mp3_path)
+        await generate_tts(
+            text,
+            provider=tts_provider,
+            voice_id=voice_id or DEFAULT_VOICES[tts_provider],
+            api_key=api_key,
+            output_path=mp3_path,
+        )
 
         out_path = mp3_path
         if video_path and video_path.exists():

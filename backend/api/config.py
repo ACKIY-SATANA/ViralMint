@@ -72,6 +72,30 @@ _DEFAULTS = {
 }
 
 
+@router.get("/config/voices/{provider}")
+async def get_voices(provider: str):
+    """Available voices for a TTS provider.
+
+    The frontend has always called this route; it did not exist, so both voice
+    pickers fell back to a hand-typed list on EVERY load — and those lists had
+    drifted from what the engines accept (see the comment on the fallbacks in
+    Voiceover.jsx). Serving the real vocabulary is what stops that class of
+    bug: one source, the engine itself.
+
+    Declared before `/config/{key}` for readability; the two path shapes do not
+    collide.
+    """
+    from backend.services.tts_service import TTSProvider, list_voices
+
+    try:
+        tts_provider = TTSProvider(provider)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown TTS provider: {provider}")
+
+    voices = await list_voices(tts_provider)
+    return {"provider": provider, "voices": voices}
+
+
 @router.get("/config/{key}")
 async def get_config(key: str):
     """Return config for a given key."""
