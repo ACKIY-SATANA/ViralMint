@@ -62,6 +62,14 @@ export default function Timeline({
   const [drag, setDrag] = useState(null)   // {kind, id, rect, grabOffset, span}
   const [draft, setDraft] = useState(null) // {start, end} while drag-creating
   const [stripFailed, setStripFailed] = useState(false)
+  // A strip can fail for two very different reasons and the difference is the
+  // whole message: ffmpeg hiccupped on an otherwise fine video (cosmetic — the
+  // bench still works), or the SOURCE has no readable video at all, which is
+  // what a download cancelled mid-write leaves behind. In the second case
+  // "the timeline still works" is a lie: playback, the IN/OUT frames and the
+  // cut itself will all fail too. One probe on the failure path tells them
+  // apart, and it is free on the happy path because it never runs there.
+  const [sourceUnreadable, setSourceUnreadable] = useState(false)
   // The sprite's true cell count, measured once it decodes (see below).
   const [stripCells, setStripCells] = useState(null)
   // Building a strip for a long source is a few seconds of ffmpeg the first
@@ -106,6 +114,19 @@ export default function Timeline({
   // return fewer cells than `n` — and every consumer of this sprite offsets
   // into it by cell index, so believing the request would skew the IN/OUT
   // proxy across the whole strip. Measuring the answer cannot drift.
+  // Ask for ONE frame when the strip fails. The endpoint decodes on demand and
+  // caches per 0.1s bucket, so on a healthy source this is a cheap hit and on a
+  // broken one it is the answer.
+  useEffect(() => {
+    if (!stripFailed || !sourceId) { setSourceUnreadable(false); return }
+    let alive = true
+    const img = new Image()
+    img.onload = () => { if (alive) setSourceUnreadable(false) }
+    img.onerror = () => { if (alive) setSourceUnreadable(true) }
+    img.src = `/api/downloaded/${sourceId}/frame?t=0&w=64`
+    return () => { alive = false }
+  }, [stripFailed, sourceId])
+
   useEffect(() => {
     onStrip?.(strip && stripLoaded && !stripFailed
       ? { ...strip, cells: stripCells || strip.cells }
@@ -266,7 +287,9 @@ export default function Timeline({
               alignItems: "center", justifyContent: "center",
               color: "text.disabled", pointerEvents: "none",
             }}>
-              Preview frames unavailable — the timeline still works
+              {sourceUnreadable
+                ? "This video has no readable frames — it may be an incomplete or cancelled download"
+                : "Preview frames unavailable — the timeline still works"}
             </Typography>
           )}
 
