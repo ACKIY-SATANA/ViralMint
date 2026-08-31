@@ -86,6 +86,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   grey block.
 
 ### Fixed
+- **The voice pickers offered voices that could not work.** Every voice you
+  could choose for a translated dub was a name the dubbing engine has never
+  had, so full dub failed whichever one you picked. The Voice-over tool
+  offered the same names under "OpenAI TTS", which OpenAI also rejects, and
+  its provider switch was decorative — choosing OpenAI handed the free engine
+  a name it didn't know and the job just failed. Both pages now offer what the
+  engine they call actually accepts, the Voice-over tool really does narrate
+  with OpenAI when you pick it and your key is set, and picking it *without* a
+  key narrates with the free voice and tells you that's what happened instead
+  of failing. Translate also offers all ten caption styles rather than three.
+- **Voice previews never played.** The little play button beside each voice
+  asked the app for a sample and the app had no way to answer, so it always
+  said "Preview failed". It now plays a real ~7-second sample, with different
+  wording each time so you hear how a voice handles more than one sentence.
+  The voice lists themselves are also served live now, rather than the pages
+  falling back to a short built-in list on every single load.
+- **A video that couldn't be read said the timeline was fine.** A download
+  interrupted part-way leaves a file that looks valid and contains no usable
+  picture. Clip Studio showed an empty timeline with "the timeline still
+  works", which was untrue — playback, the frame previews and the cut itself
+  would all fail too. It now says the video has no readable frames and that it
+  may be an incomplete or cancelled download. Behind that, such a file used to
+  cost dozens of failed decode attempts *every time you selected it*; now it
+  costs two. And when something ffmpeg does fails, the log finally says why
+  instead of printing ffmpeg's version banner.
+- **Expired thumbnails left broken cards in Scout.** Some platforms sign their
+  thumbnail links so they stop working after a while, so results from an
+  earlier scout showed a broken-image icon with the play button floating over
+  nothing. Those cards now show a quiet placeholder and keep everything that
+  is still good — title, stats and buttons. One dead thumbnail no longer
+  affects its neighbours.
+- **Two colours were too faint to read.** The "CREATED" label in the Library
+  and the green status chips in Scout both sat below the readable-contrast
+  threshold. Both are now readable, and the Library's colour rail keeps the
+  brand colour it always had.
 - **Photos with a transparent background rendered as garbage.** Any image
   taken into a video had its transparency *discarded* rather than filled in,
   which left whatever colour happened to be hiding underneath — so a cut-out
@@ -164,6 +199,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   validated (and regenerated if invalid) at startup.
 
 ### Changed
+- **Fewer redundant requests on every page change.** Opening a page asked the
+  app for the job list four times over; it now asks twice, and restoring
+  in-progress work takes one request instead of two.
 - **Chat replies render smoothly.** Every streamed token wrote to the store and
   re-parsed the whole partial reply, so long answers got progressively jankier.
   Tokens are now batched to at most one update per frame — same output, a
