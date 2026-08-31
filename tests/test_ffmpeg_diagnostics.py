@@ -108,3 +108,90 @@ def test_the_filmstrip_stops_after_one_undecodable_cell(tmp_path):
         assert len(calls) >= 8, "the good path must still extract every cell"
     finally:
         ffmpeg_service.extract_frame_at = real
+
+
+def test_the_filmstrip_stops_when_only_the_TAIL_is_missing(tmp_path):
+    """The commoner damage shape, and the one a head-only probe misses.
+
+    A download truncated at the END keeps a valid header, a plausible duration
+    AND its opening frames — so cell 0 succeeds and every later cell fails.
+    Measured live before this was fixed: a 45s source cut to 7% of its bytes
+    passed the probe and then burned 61 ffmpeg spawns on cells that could
+    never decode, every time the source was selected.
+
+    Bailing is outcome-identical: a strip needs every cell, so a tail that
+    cannot decode fails the strip either way.
+    """
+    from backend.services import ffmpeg_service
+    from backend.services.ffmpeg_service import extract_filmstrip
+
+    good = tmp_path / "good.mp4"
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=25",
+         "-t", "45", "-movflags", "+faststart", str(good)],
+        capture_output=True)
+    if r.returncode != 0 or not good.exists():
+        pytest.skip("ffmpeg not available to build the fixture")
+
+    raw = good.read_bytes()
+    truncated = tmp_path / "truncated.mp4"
+    truncated.write_bytes(raw[:int(len(raw) * 0.07)])
+
+    # The fixture has to be the shape the test claims: a readable HEAD.
+    head = asyncio.run(ffmpeg_service.extract_frame_at(
+        video_path=truncated, timestamp=0.0, output_path=tmp_path / "head.jpg"))
+    if not head:
+        pytest.skip("this ffmpeg build decodes nothing from the fixture — "
+                    "the head-failure case already covers that")
+
+    calls = []
+    real = ffmpeg_service.extract_frame_at
+
+    async def counting(*a, **kw):
+        calls.append(kw.get("timestamp"))
+        return await real(*a, **kw)
+
+    ffmpeg_service.extract_frame_at = counting
+    try:
+        out = asyncio.run(extract_filmstrip(
+            video_path=truncated, output_path=tmp_path / "s.jpg", count=32))
+        assert out is None, "a strip cannot be built without its last cell"
+        assert len(calls) <= 4, (
+            f"asked for {len(calls)} frames from a source whose tail cannot "
+            f"decode — the head probe passed and the tail probe is missing"
+        )
+    finally:
+        ffmpeg_service.extract_frame_at = real
+
+
+def test_a_healthy_source_still_builds_every_cell(tmp_path):
+    """The probes must not cost the good path anything. Both ends are cells
+    the strip needs anyway, so they are reused, not re-extracted."""
+    from backend.services import ffmpeg_service
+    from backend.services.ffmpeg_service import extract_filmstrip
+
+    good = tmp_path / "good.mp4"
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
+         "-t", "30", "-movflags", "+faststart", str(good)],
+        capture_output=True)
+    if r.returncode != 0:
+        pytest.skip("ffmpeg not available to build the fixture")
+
+    calls = []
+    real = ffmpeg_service.extract_frame_at
+
+    async def counting(*a, **kw):
+        calls.append(kw.get("timestamp"))
+        return await real(*a, **kw)
+
+    ffmpeg_service.extract_frame_at = counting
+    try:
+        out = asyncio.run(extract_filmstrip(
+            video_path=good, output_path=tmp_path / "ok.jpg", count=16))
+        assert out and out.exists() and out.stat().st_size > 1000
+        # Exactly 16 extractions: no cell is done twice by the probes.
+        assert len(calls) == 16, f"expected 16 extractions, got {len(calls)}"
+        assert len(set(calls)) == 16, "a cell was extracted more than once"
+    finally:
+        ffmpeg_service.extract_frame_at = real
