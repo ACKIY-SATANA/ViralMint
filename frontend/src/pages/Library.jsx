@@ -44,7 +44,7 @@ import AssetTile from "../components/librarynext/AssetTile"
 import SourceTree from "../components/librarynext/SourceTree"
 import AssetDrawer from "../components/librarynext/AssetDrawer"
 import PendingTile from "../components/librarynext/PendingTile"
-import { MEDIA, ORIGINS, originColor, activityFromJob } from "../components/librarynext/assetModel"
+import { MEDIA, ORIGINS, originColor, originTextColor, activityFromJob } from "../components/librarynext/assetModel"
 
 // NOTE: there is no "Use in…" hand-off here. Every tool page takes an UPLOAD —
 // no endpoint in this variant accepts a library reference — so a button that
@@ -536,7 +536,7 @@ export default function Library() {
             "made of what", where the question actually gets asked. */}
         {origins.length === 1 && facets.producers.length > 1 && (
           <Typography sx={{ mb: 2, fontSize: "0.76rem", color: "text.secondary" }}>
-            <Box component="span" sx={{ color: originColor(origins[0], theme.palette.mode === "dark"), fontWeight: 700 }}>
+            <Box component="span" sx={{ color: originTextColor(origins[0], theme.palette.mode === "dark"), fontWeight: 700 }}>
               {ORIGINS[origins[0]]?.label}
             </Box>
             {" is "}

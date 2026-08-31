@@ -22,7 +22,7 @@ import ImageRoundedIcon from "@mui/icons-material/ImageRounded"
 import GraphicEqRoundedIcon from "@mui/icons-material/GraphicEqRounded"
 import DescriptionRoundedIcon from "@mui/icons-material/DescriptionRounded"
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded"
-import { ORIGINS, originColor, fmtDay } from "./assetModel"
+import { ORIGINS, originColor, originTextColor, fmtDay } from "./assetModel"
 import { formatClock } from "../../utils/format"
 
 const MEDIA_ICON = {
@@ -232,7 +232,8 @@ export function OriginBadge({ origin, size = "sm" }) {
         <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: oc }} />
         <Typography sx={{
           fontSize: size === "sm" ? "0.6rem" : "0.68rem", fontWeight: 700,
-          letterSpacing: "0.07em", textTransform: "uppercase", color: oc,
+          letterSpacing: "0.07em", textTransform: "uppercase",
+          color: originTextColor(origin, theme.palette.mode === "dark"),
         }}>
           {ORIGINS[origin]?.label}
         </Typography>
