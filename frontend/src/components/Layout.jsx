@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Outlet, NavLink, useLocation, useNavigate } from "react-router-dom"
 import useWebSocket from "../hooks/useWebSocket"
 import useJobs from "../hooks/useJobs"
@@ -77,7 +77,15 @@ export default function Layout() {
   // you just started could be missing from Activity long enough to read as
   // never having started.
   const wsJobCount = Object.keys(activeJobs).length
-  useEffect(() => { fetchJobs() }, [wsJobCount])  // eslint-disable-line react-hooks/exhaustive-deps
+  // This nudge reacts to a CHANGE in the count. Its first run is not a change,
+  // and `useJobs` already fetches on mount — so firing it there sent the same
+  // /api/jobs?limit=200 request twice on every single navigation. Skip the
+  // mount run; keep every later one.
+  const jobNudgeReady = useRef(false)
+  useEffect(() => {
+    if (!jobNudgeReady.current) { jobNudgeReady.current = true; return }
+    fetchJobs()
+  }, [wsJobCount])  // eslint-disable-line react-hooks/exhaustive-deps
   // Opening the panel is a question — answer it with fresh data.
   useEffect(() => { if (activityOpen) fetchJobs() }, [activityOpen])  // eslint-disable-line react-hooks/exhaustive-deps
 

@@ -37,11 +37,14 @@ export default function useWebSocket() {
     // Restore running/pending jobs from API so active jobs survive page refresh
     const restoreJobs = async () => {
       try {
-        const [runningRes, pendingRes] = await Promise.all([
-          http.get("/api/jobs", { params: { status: "running", limit: 20 } }),
-          http.get("/api/jobs", { params: { status: "pending", limit: 20 } }),
-        ])
-        const allJobs = [...(runningRes.data.jobs || []), ...(pendingRes.data.jobs || [])]
+        // ONE request for both statuses (the endpoint takes a comma list).
+        // This used to be two, on a load that already fetches jobs twice more
+        // for the Activity panel. Limit is 40, not 20, because it now covers
+        // what were two separate 20-row windows.
+        const { data } = await http.get("/api/jobs", {
+          params: { status: "running,pending", limit: 40 },
+        })
+        const allJobs = data.jobs || []
         // Restore active jobs from API on reconnect
         allJobs.forEach(j => {
           if (!useAppStore.getState().activeJobs[j.id]) {
