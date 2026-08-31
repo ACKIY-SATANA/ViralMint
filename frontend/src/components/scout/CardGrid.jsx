@@ -2,6 +2,7 @@ import { useState, useCallback } from "react"
 import { Box, Card, CardMedia, CardContent, Typography, Chip, Checkbox, Tooltip, Button, IconButton, Stack } from "@mui/material"
 import CheckCircleIcon from "@mui/icons-material/CheckCircle"
 import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline"
+import VideocamOffOutlinedIcon from "@mui/icons-material/VideocamOffOutlined"
 import DownloadIcon from "@mui/icons-material/Download"
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline"
 import LaunchIcon from "@mui/icons-material/Launch"
@@ -51,6 +52,15 @@ const PAGE_SIZE = 50
 export default function CardGrid({ results, onSelect, onDownload, onDelete, selectedIds, onToggle }) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [loadingId, setLoadingId] = useState(null)
+  // Thumbnails whose host refused the image. Scout results carry the
+  // platform's own CDN url, and TikTok's are SIGNED — they expire by design,
+  // so a scout you ran yesterday renders a card with the browser's
+  // broken-image glyph and the play button floating over nothing. Nothing can
+  // un-expire the url; the card just has to stop claiming it has a picture.
+  const [brokenThumbs, setBrokenThumbs] = useState(() => new Set())
+  const markThumbBroken = useCallback((id) => {
+    setBrokenThumbs((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
+  }, [])
   const showMore = useCallback(() => setVisibleCount((c) => c + PAGE_SIZE), [])
 
   if (!results || results.length === 0) {
@@ -119,9 +129,14 @@ export default function CardGrid({ results, onSelect, onDownload, onDelete, sele
                 display: "flex", flexDirection: "column", justifyContent: "center", px: 2,
                 overflow: "hidden",
               }}>
-                {r.thumbnail_url ? (
+                {r.thumbnail_url && !brokenThumbs.has(r.id) ? (
                   <>
-                    <CardMedia component="img" height={160} image={r.thumbnail_url} alt={r.title}
+                    {/* Decorative wash behind the headline. A refused image
+                        still paints the browser's broken glyph, so it takes
+                        the same guard as the video thumbnail — faint, but a
+                        smudge nobody can explain. */}
+                    <CardMedia component="img" height={160} image={r.thumbnail_url} alt=""
+                      onError={() => markThumbBroken(r.id)}
                       sx={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", objectFit: "cover", opacity: 0.15 }} />
                     <Box sx={{ position: "relative", zIndex: 1 }}>
                       <NewspaperIcon sx={{ fontSize: 28, color: "warning.main", mb: 0.5 }} />
@@ -160,8 +175,20 @@ export default function CardGrid({ results, onSelect, onDownload, onDelete, sele
             ) : (
               /* ── Video thumbnail area ── */
               <Box sx={{ position: "relative", width: "100%", height: 160, "&:hover .play-icon": { transform: "scale(1.15)", opacity: 1 } }}>
-                {r.thumbnail_url && (
-                  <CardMedia component="img" height={160} image={r.thumbnail_url} alt={r.title} />
+                {r.thumbnail_url && !brokenThumbs.has(r.id) ? (
+                  <CardMedia component="img" height={160} image={r.thumbnail_url} alt={r.title}
+                    onError={() => markThumbBroken(r.id)} />
+                ) : (
+                  // A quiet plate, not an empty box: the play button and the
+                  // metadata below still sit on this area, and they read as
+                  // broken layout without something behind them.
+                  <Box sx={{
+                    width: "100%", height: 160,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    bgcolor: "action.hover",
+                  }}>
+                    <VideocamOffOutlinedIcon sx={{ fontSize: 30, color: "text.disabled" }} />
+                  </Box>
                 )}
                 {watchUrl && (
                   <Box onClick={(e) => { e.stopPropagation(); window.open(watchUrl, "_blank") }} sx={{
