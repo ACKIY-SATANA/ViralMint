@@ -7,7 +7,8 @@ word-by-word captions and background music, and extracts viral clips from long
 videos. You can run it two ways, from the same engine:
 
 - **Self-host** — this open-source repository (AGPL-3.0). Your machine, your API
-  keys, includes the Uploader agent that publishes directly to YouTube and TikTok.
+  keys, includes an Uploader agent — one click per video sends it to YouTube or to
+  your TikTok drafts (nothing posts automatically).
 - **Hosted** — the managed desktop app at
   **[viralmint.net](https://viralmint.net)**. No install of dependencies, no API
   keys to wire up, prepaid credits with a small daily starter allowance.
@@ -22,7 +23,7 @@ This page explains the differences so you can pick the right one.
 | **Setup** | Clone, install deps, `python run.py` | Download a signed + notarized installer, sign in |
 | **API keys** | Bring your own (Anthropic / OpenAI / OpenRouter / YouTube / Pexels) | None — access routes through the cloud, billed as prepaid credits |
 | **Cost** | Free software; you pay your own provider bills | One-time prepaid top-ups + a small daily starter allowance |
-| **Auto-publish** | ✅ Uploader agent posts to YouTube + TikTok | ❌ You download the `.mp4` and post it yourself |
+| **Upload from the app** | ✅ One click per video: YouTube (your own OAuth app) or TikTok drafts. Never automatic | ❌ You download the `.mp4` and post it yourself |
 | **Runs offline / private** | ✅ 100% local — keys, scripts, videos never leave your machine | Cloud-assisted for AI |
 | **Extras** | Core pipeline + Tools | Also: AI Music Studio, Visual Style preset, Translate-and-Dub, polished Tools |
 | **Best for** | Developers who want full control and their own keys | Creators who want zero setup and one bill |
@@ -32,7 +33,8 @@ This page explains the differences so you can pick the right one.
 ### What is ViralMint?
 ViralMint is an open-source viral-content video pipeline: an AI agent that scouts
 trends, analyzes competitors, generates videos, extracts clips from long-form
-footage, and (in the self-host build) auto-publishes to YouTube and TikTok. It runs
+footage, and (in the self-host build) uploads a finished video to YouTube or your
+TikTok drafts when you click Upload. It runs
 as a desktop app controlled from your browser, or from Telegram, WhatsApp, Discord
 and Slack.
 
@@ -53,8 +55,11 @@ Pexels keys, stored encrypted on your machine. The
 handled for you and billed as prepaid credits.
 
 ### Does ViralMint auto-upload to YouTube and TikTok?
-The self-host build ships an **Uploader agent** that publishes directly to YouTube
-and TikTok. The [hosted version](https://viralmint.net) does not auto-upload — it
+No build posts anything on its own. The self-host build ships an **Uploader
+agent** you trigger per video: it uploads to YouTube through your own Google OAuth
+client (Google keeps uploads from an unverified API project private), and to your
+TikTok drafts through your own TikTok developer app — you finish the post in the
+TikTok app. The [hosted version](https://viralmint.net) has no uploader at all — it
 generates the video and drafts the title/description/tags, and you download the
 `.mp4` and post it manually.
 

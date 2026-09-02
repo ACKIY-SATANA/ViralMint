@@ -6,7 +6,7 @@
 
 ### The open-source, local-first video pipeline for creators
 
-**Scout trends → clip long videos → generate AI shorts → auto-publish to YouTube & TikTok.**
+**Scout trends → clip long videos → generate AI shorts → upload to YouTube & TikTok, one click per video.**
 All on your machine. Bring your own API keys. No SaaS in the middle. No telemetry.
 
 <!-- Activity badges (top row) — auto-update from GitHub, so they reflect
@@ -31,27 +31,27 @@ All on your machine. Bring your own API keys. No SaaS in the middle. No telemetr
 
 <img src="docs/screenshots/clipper-bench.webp" alt="ViralMint Clip Studio — a cutting bench with a filmstrip timeline, speech lane and pending cuts" width="900" />
 
-<sub><i>Cut a long video into shorts on a real timeline — drag across its own frames, snap to sentence boundaries, or let the AI propose the moments. Scouting, transcription, AI video, motion graphics and publishing all run from the same app.</i></sub>
+<sub><i>Cut a long video into shorts on a real timeline — drag across its own frames, snap to sentence boundaries, or let the AI propose the moments. Scouting, transcription, AI video, motion graphics and uploading all run from the same app.</i></sub>
 
 </div>
 
 ---
 
 > **What manual creators do across a dozen tabs and apps, ViralMint runs as one local workflow.**
-> Find trending videos across YouTube, TikTok and Douyin, transcribe and analyze them with local Whisper, cut long videos into publishable shorts on a real timeline, write original scripts with the AI of your choice, render captioned stock-footage videos, design animated motion graphics — and post directly to YouTube and TikTok. Drive it from a browser, or chat with it on Telegram, WhatsApp, Discord, or Slack.
+> Find trending videos across YouTube, TikTok and Douyin, transcribe and analyze them with local Whisper, cut long videos into publishable shorts on a real timeline, write original scripts with the AI of your choice, render captioned stock-footage videos, design animated motion graphics — then, when you click Upload, send the result to YouTube or to your TikTok drafts. Drive it from a browser, or chat with it on Telegram, WhatsApp, Discord, or Slack.
 
 ## ✨ Why ViralMint
 
 |   |   |
 |---|---|
 | 🔒 **100% local** | SQLite, local Whisper, local FFmpeg. Your scripts, transcripts, downloads, and generated videos never leave your machine. |
-| 🔑 **BYOK, no middleman** | Bring your own Anthropic / OpenAI / OpenRouter / YouTube / Pexels keys. Encrypted at rest with AES-256, sent straight to the provider — there is no ViralMint server in between. |
-| 🤖 **Agents, not a chat wrapper** | Six purpose-built agents — Planner, Scout, Download, Analyzer, Generator, and **Uploader** — orchestrated by a streaming AI chat that actually runs the work. |
-| 📤 **It publishes for you** | Direct upload to YouTube and TikTok with AI-drafted titles, descriptions, tags, and thumbnails. The full loop, not just generation. |
+| 🔑 **BYOK, no middleman** | Bring your own Anthropic / OpenAI / OpenRouter / YouTube / Pexels keys. Encrypted at rest with Fernet (AES-128-CBC, HMAC-signed), sent straight to the provider — there is no ViralMint server in between. |
+| 🤖 **Agents, not a chat wrapper** | Purpose-built agents — Planner, Scout, Download, Analyzer, Generator, and **Uploader** — orchestrated by a streaming AI chat that actually runs the work. |
+| 📤 **Upload from the app** | Review the AI-drafted title, description and tags, then upload to YouTube through your own OAuth app, or push to your TikTok drafts. One click per video — nothing is ever posted automatically. |
 | 📱 **Runs from your phone** | Two-way chat with the planner over Telegram, WhatsApp, Discord, or Slack — and job alerts in the same thread. |
-| 🆓 **Free out of the box** | Local Whisper, Edge TTS (400+ voices), royalty-free music, Pexels stock, and 22 FFmpeg tools — the heavy lifting costs $0. Pay only for the AI you choose to plug in. |
+| 🆓 **Free out of the box** | Local Whisper, Edge TTS (400+ voices), royalty-free music, Pexels stock, and 22 built-in tools (most of them pure FFmpeg + Whisper) — the heavy lifting costs $0. Pay only for the AI you choose to plug in. |
 
-<sub>Battle-tested: a **2,300-test pytest suite** runs on every commit, plus a browser harness that drives the real app end to end. AGPL-3.0 — fork it, modify it, build a business on it.</sub>
+<sub>Battle-tested: a **2,400-test pytest suite** runs on every commit, plus a browser harness that drives the real app end to end. AGPL-3.0 — fork it, modify it, build a business on it.</sub>
 
 ---
 
@@ -103,8 +103,8 @@ One faceted view over everything you own — renders, downloads, every tool outp
 <tr>
 <td width="50%" valign="top">
 
-### 📤 Publish
-Direct upload to **YouTube** (OAuth) and **TikTok** (OAuth or session cookie) with platform-optimized titles, descriptions, tags, and thumbnails — so a finished video actually gets posted.
+### 📤 Upload
+Direct upload to **YouTube** (Data API, through your own OAuth client) with the AI-drafted title, description and tags — public by default, from a button in the Library, Clip Studio or chat, behind a confirm that shows exactly what will go out. **TikTok** uploads to your account's drafts (the Content Posting API's inbox endpoint, through your own developer app) for you to finish in the TikTok app; a session-cookie fallback exists but breaks TikTok's ToS — see [LEGAL.md](LEGAL.md#tiktok). Nothing posts on a schedule, and thumbnails are generated locally but not uploaded.
 
 </td>
 <td width="50%" valign="top">
@@ -174,7 +174,6 @@ YouTube / TikTok / Pexels still need free API keys — links in the [BYOK sectio
 | **Python 3.11+** | `brew install python` | `apt install python3.11` | [python.org](https://www.python.org/downloads/) |
 | **Node.js 18+** | `brew install node` | `apt install nodejs npm` | [nodejs.org](https://nodejs.org/) |
 | **FFmpeg** | `brew install ffmpeg` | `apt install ffmpeg` | [ffmpeg.org](https://ffmpeg.org/download.html) |
-| **ImageMagick** | `brew install imagemagick` | `apt install imagemagick` | [imagemagick.org](https://imagemagick.org/) |
 
 ### Install & run
 
@@ -208,7 +207,7 @@ Output lands in `desktop/release/`. First build takes ~10–15 min (PyInstaller 
 
 ## 🔑 Bring your own keys (BYOK)
 
-Every key can be set in `.env` *or* per-user inside the app under **Settings** — whichever is set takes priority. Per-user keys are **AES-256 encrypted** before storage. Keys go straight to the provider; ViralMint has no backend server in the middle.
+Every key can be set in `.env` *or* per-user inside the app under **Settings** — whichever is set takes priority. Per-user keys are **Fernet-encrypted** (AES-128-CBC + HMAC-SHA256) before storage. Keys go straight to the provider; ViralMint has no backend server in the middle.
 
 | For | Provider | Where | Cost |
 |:----|:---------|:------|:-----|
@@ -217,7 +216,8 @@ Every key can be set in `.env` *or* per-user inside the app under **Settings** �
 | Stock footage | Pexels | [pexels.com/api](https://www.pexels.com/api/) | Free |
 | Premium voiceover (optional) | OpenAI TTS | [platform.openai.com](https://platform.openai.com/api-keys) | Pay-per-use |
 | TikTok / Douyin scouting | **TikHub API** (recommended) | [tikhub.io](https://tikhub.io) | Free tier |
-| YouTube / TikTok upload | OAuth | One-click in Settings | Free |
+| YouTube upload | Your own Google Cloud OAuth client — `YOUTUBE_CLIENT_ID` / `SECRET` in `.env`. Google restricts uploads from an unverified API project to *private* until the project passes verification | `.env`, then Settings → Connect YouTube | Free |
+| TikTok upload (to drafts) | Your own TikTok developer app with the Content Posting API — `TIKTOK_CLIENT_KEY` / `SECRET` in `.env`. Session-cookie fallback exists but breaks TikTok's ToS | `.env`, then Settings → Connect TikTok | Free |
 | Telegram / Discord / Slack | Bot tokens | Settings → Messaging | Free |
 | WhatsApp | QR-scan pairing | Settings → Messaging | Free |
 
@@ -248,7 +248,7 @@ Every key can be set in `.env` *or* per-user inside the app under **Settings** �
                      │  Generator Agent ─ Script → TTS → Stock →      │
                      │                    Captions → Music → MP4      │
                      │  Motion Renderer ─ local HyperFrames engine    │
-                     │  Uploader Agent ── YouTube + TikTok OAuth      │
+                     │  Uploader Agent ── YouTube · TikTok drafts     │
                      │  Messaging ─────── Telegram · WhatsApp ·       │
                      │                    Discord · Slack             │
                      └─────────────────┬──────────────────────────────┘
@@ -269,13 +269,13 @@ Every key can be set in `.env` *or* per-user inside the app under **Settings** �
 | **Backend** | Python 3.11+ · FastAPI · SQLAlchemy 2.0 (async) · SQLite · WebSockets |
 | **Frontend** | React 18 · Vite · MUI 7 · Zustand · React Router 6 |
 | **AI (BYOK)** | Anthropic Claude SDK · OpenAI SDK · OpenRouter (300+ models via one key) |
-| **Transcription** | faster-whisper (local, multilingual, GPU-aware) |
+| **Transcription** | faster-whisper (local, multilingual, CPU int8) |
 | **TTS** | Edge TTS (free) · OpenAI TTS |
 | **Video** | Pexels stock · FFmpeg · Ken Burns image fallback |
 | **Captions** | FFmpeg + ASS (word-by-word highlight animation) |
 | **Download** | yt-dlp (1,800+ sites) |
 | **Messaging** | python-telegram-bot · discord.py · slack-sdk · neonize (WhatsApp) |
-| **Security** | Fernet (AES-256) for credentials at rest |
+| **Security** | Fernet (AES-128-CBC + HMAC-SHA256) for credentials at rest |
 
 ---
 
@@ -350,7 +350,7 @@ ViralMint/
 │       ├── hooks/                  # WebSocket, settings, jobs, source video
 │       └── store/                  # Zustand global state
 │
-├── tests/                          # pytest suite (2,300+ tests)
+├── tests/                          # pytest suite (2,400+ tests)
 ├── storage/                        # Downloaded videos, audio, generated output (gitignored)
 │
 ├── requirements.txt
@@ -385,7 +385,7 @@ ViralMint is licensed under the **GNU Affero General Public License v3.0** ([LIC
 
 ### 🙋 Don't want to self-host?
 
-There's also a hosted build at **[viralmint.net](https://viralmint.net)** — the same scout + analyze + generate engine, signed and notarized, with no API keys to wire up (prepaid credits instead of BYOK). It's closed-source and doesn't auto-upload — a different set of trade-offs for people who'd rather not run their own keys and installs. Full comparison + FAQ: **[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**. Otherwise, everything you need is right here — read on and `python run.py`.
+There's also a hosted build at **[viralmint.net](https://viralmint.net)** — the same scout + analyze + generate engine, signed and notarized, with no API keys to wire up (prepaid credits instead of BYOK). It's closed-source and has no uploader at all — a different set of trade-offs for people who'd rather not run their own keys and installs. Full comparison + FAQ: **[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**. Otherwise, everything you need is right here — read on and `python run.py`.
 
 ---
 

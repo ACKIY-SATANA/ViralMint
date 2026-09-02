@@ -6,7 +6,7 @@
 
 ### 面向创作者的开源、本地优先视频流水线
 
-**发现趋势 → 切片长视频 → 生成 AI 短视频 → 自动发布到 YouTube 与 TikTok。**
+**发现趋势 → 切片长视频 → 生成 AI 短视频 → 逐条确认后上传到 YouTube 与 TikTok。**
 全部在你自己的机器上运行。自带 API 密钥。中间没有任何 SaaS。零遥测。
 
 <!-- Activity badges (top row) — auto-update from GitHub, so they reflect
@@ -31,27 +31,27 @@
 
 <img src="docs/screenshots/clipper-bench.webp" alt="ViralMint Clip Studio — a cutting bench with a filmstrip timeline, speech lane and pending cuts" width="900" />
 
-<sub><i>在真正的时间轴上把长视频切成短视频——在它自己的帧上拖拽、吸附到句子边界，或者让 AI 先提议。发现选题、转写、AI 视频、动态图形与发布，全都在同一个应用里。</i></sub>
+<sub><i>在真正的时间轴上把长视频切成短视频——在它自己的帧上拖拽、吸附到句子边界，或者让 AI 先提议。发现选题、转写、AI 视频、动态图形与上传，全都在同一个应用里。</i></sub>
 
 </div>
 
 ---
 
 > **手动创作者要在十几个标签页和应用之间来回折腾的事，ViralMint 用一条本地工作流全部搞定。**
-> 跨 YouTube、TikTok 和抖音发现热门视频，用本地 Whisper 转写并分析，把长视频切成可发布的短视频，用你选择的 AI 撰写原创脚本，渲染带字幕的素材视频——再直接发布到 YouTube 和 TikTok。可以在浏览器里驱动它，也可以在 Telegram、WhatsApp、Discord 或 Slack 上跟它聊。
+> 跨 YouTube、TikTok 和抖音发现热门视频，用本地 Whisper 转写并分析，把长视频切成可发布的短视频，用你选择的 AI 撰写原创脚本，渲染带字幕的素材视频——然后在你点击「上传」时，把成片上传到 YouTube，或送入你的 TikTok 草稿箱。可以在浏览器里驱动它，也可以在 Telegram、WhatsApp、Discord 或 Slack 上跟它聊。
 
 ## ✨ 为什么选择 ViralMint
 
 |   |   |
 |---|---|
 | 🔒 **100% 本地** | SQLite、本地 Whisper、本地 FFmpeg。你的脚本、转写、下载和生成的视频永不离开你的机器。 |
-| 🔑 **BYOK，无中间商** | 使用你自己的 Anthropic / OpenAI / OpenRouter / YouTube / Pexels 密钥，落盘时以 AES-256 加密，直接发往服务提供方——中间没有任何 ViralMint 服务器。 |
-| 🤖 **是智能体架构，不是套壳聊天** | 六个各司其职的智能体——Planner、Scout、Download、Analyzer、Generator 和 **Uploader（上传智能体）**——由一个真正会去执行工作的流式 AI 对话统一编排。 |
-| 📤 **它替你发布** | 直接上传到 YouTube 和 TikTok，并附带 AI 起草的标题、描述、标签和缩略图。是完整闭环，而不只是生成。 |
+| 🔑 **BYOK，无中间商** | 使用你自己的 Anthropic / OpenAI / OpenRouter / YouTube / Pexels 密钥，落盘时以 Fernet（AES-128-CBC + HMAC-SHA256）加密，直接发往服务提供方——中间没有任何 ViralMint 服务器。 |
+| 🤖 **是智能体架构，不是套壳聊天** | 各司其职的智能体——Planner、Scout、Download、Analyzer、Generator 和 **Uploader（上传智能体）**——由一个真正会去执行工作的流式 AI 对话统一编排。 |
+| 📤 **在应用内上传** | 先审阅 AI 起草的标题、描述和标签，再通过你自己的 OAuth 应用上传到 YouTube，或推送到你的 TikTok 草稿箱。每条视频点一次——绝不会自动发布。 |
 | 📱 **用手机随时随地掌控** | 通过 Telegram、WhatsApp、Discord 或 Slack 与规划智能体（Planner）双向对话——任务提醒也发到同一个会话里。 |
-| 🆓 **开箱即免费** | 本地 Whisper、Edge TTS（400+ 语音）、免版税音乐、Pexels 素材，以及 22 个 FFmpeg 工具——最重的活儿花费 $0。只为你主动选择接入的 AI 付费。 |
+| 🆓 **开箱即免费** | 本地 Whisper、Edge TTS（400+ 语音）、免版税音乐、Pexels 素材，以及 22 个内置工具（大多只靠 FFmpeg + Whisper）——最重的活儿花费 $0。只为你主动选择接入的 AI 付费。 |
 
-<sub>经过实战检验：一套 **2,300 个测试的 pytest 测试集** 在每次提交时运行，另有一套浏览器测试装置端到端驱动真实应用。AGPL-3.0——尽管 fork、修改，并在其之上创业。</sub>
+<sub>经过实战检验：一套 **2,400 个测试的 pytest 测试集** 在每次提交时运行，另有一套浏览器测试装置端到端驱动真实应用。AGPL-3.0——尽管 fork、修改，并在其之上创业。</sub>
 
 ---
 
@@ -103,8 +103,8 @@
 <tr>
 <td width="50%" valign="top">
 
-### 📤 Publish（发布）
-直接上传到 **YouTube**（OAuth）和 **TikTok**（OAuth 或会话 Cookie），并配上按平台优化的标题、描述、标签与缩略图——让一条做好的视频真正被发布出去。
+### 📤 Upload（上传）
+直接上传到 **YouTube**（Data API，走你自己的 OAuth 客户端），附带 AI 起草的标题、描述和标签——默认公开，从 Library、Clip Studio 或聊天中的按钮触发，上传前会先弹出确认框，展示即将发出的全部内容。**TikTok** 上传到你账号的草稿箱（Content Posting API 的 inbox 端点，走你自己的开发者应用），由你在 TikTok 应用里完成发布；也有会话 Cookie 的兜底方式，但它违反 TikTok 服务条款——见 [LEGAL.md](LEGAL.md#tiktok)。没有任何定时发布，缩略图在本地生成但不会上传。
 
 </td>
 <td width="50%" valign="top">
@@ -173,7 +173,6 @@ YouTube / TikTok / Pexels 仍需免费的 API 密钥——链接见 [BYOK 章节
 | **Python 3.11+** | `brew install python` | `apt install python3.11` | [python.org](https://www.python.org/downloads/) |
 | **Node.js 18+** | `brew install node` | `apt install nodejs npm` | [nodejs.org](https://nodejs.org/) |
 | **FFmpeg** | `brew install ffmpeg` | `apt install ffmpeg` | [ffmpeg.org](https://ffmpeg.org/download.html) |
-| **ImageMagick** | `brew install imagemagick` | `apt install imagemagick` | [imagemagick.org](https://imagemagick.org/) |
 
 ### 安装与运行
 
@@ -207,7 +206,7 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
 
 ## 🔑 自带密钥 (BYOK)
 
-每把密钥都可以在 `.env` *或* 应用内「设置」中按用户设置——谁被设置了就以谁优先。按用户设置的密钥在存储前会经 **AES-256 加密**。密钥直连服务提供方；ViralMint 中间没有任何后端服务器。
+每把密钥都可以在 `.env` *或* 应用内「设置」中按用户设置——谁被设置了就以谁优先。按用户设置的密钥在存储前会经 **Fernet 加密**（AES-128-CBC + HMAC-SHA256）。密钥直连服务提供方；ViralMint 中间没有任何后端服务器。
 
 | 用于 | 提供方 | 在哪里设置 | 费用 |
 |:----|:---------|:------|:-----|
@@ -216,7 +215,8 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
 | 素材视频 | Pexels | [pexels.com/api](https://www.pexels.com/api/) | 免费 |
 | 高级配音（可选） | OpenAI TTS | [platform.openai.com](https://platform.openai.com/api-keys) | 按用量付费 |
 | TikTok / 抖音发现 | **TikHub API**（推荐） | [tikhub.io](https://tikhub.io) | 有免费额度 |
-| YouTube / TikTok 上传 | OAuth | 设置中一键完成 | 免费 |
+| YouTube 上传 | 你自己的 Google Cloud OAuth 客户端——`.env` 中的 `YOUTUBE_CLIENT_ID` / `SECRET`。Google 会把未通过验证的 API 项目上传的视频限制为*私密*，直到项目通过验证 | 先填 `.env`，再到设置中连接 YouTube | 免费 |
+| TikTok 上传（到草稿箱） | 你自己的 TikTok 开发者应用，需开通 Content Posting API——`.env` 中的 `TIKTOK_CLIENT_KEY` / `SECRET`。会话 Cookie 兜底方式存在，但违反 TikTok 服务条款 | 先填 `.env`，再到设置中连接 TikTok | 免费 |
 | Telegram / Discord / Slack | Bot 令牌 | 设置 → Messaging | 免费 |
 | WhatsApp | 扫码配对 | 设置 → Messaging | 免费 |
 
@@ -247,7 +247,7 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
                      │  Generator Agent ─ Script → TTS → Stock →      │
                      │                    Captions → Music → MP4      │
                      │  Motion Renderer ─ local HyperFrames engine    │
-                     │  Uploader Agent ── YouTube + TikTok OAuth      │
+                     │  Uploader Agent ── YouTube · TikTok drafts     │
                      │  Messaging ─────── Telegram · WhatsApp ·       │
                      │                    Discord · Slack             │
                      └─────────────────┬──────────────────────────────┘
@@ -268,13 +268,13 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
 | **后端** | Python 3.11+ · FastAPI · SQLAlchemy 2.0（异步）· SQLite · WebSockets |
 | **前端** | React 18 · Vite · MUI 7 · Zustand · React Router 6 |
 | **AI（BYOK）** | Anthropic Claude SDK · OpenAI SDK · OpenRouter（一把密钥用上 300+ 模型） |
-| **转写** | faster-whisper（本地、多语言、可感知 GPU） |
+| **转写** | faster-whisper（本地、多语言、CPU int8） |
 | **TTS** | Edge TTS（免费）· OpenAI TTS |
 | **视频** | Pexels 素材 · FFmpeg · Ken Burns 图片兜底 |
 | **字幕** | FFmpeg + ASS（逐字高亮动画） |
 | **下载** | yt-dlp（1,800+ 站点） |
 | **消息** | python-telegram-bot · discord.py · slack-sdk · neonize（WhatsApp） |
-| **安全** | Fernet（AES-256）加密落盘凭据 |
+| **安全** | Fernet（AES-128-CBC + HMAC-SHA256）加密落盘凭据 |
 
 ---
 
@@ -347,7 +347,7 @@ ViralMint/
 │       ├── hooks/                  # WebSocket, settings, jobs, source video
 │       └── store/                  # Zustand global state
 │
-├── tests/                          # pytest suite (2,300+ tests)
+├── tests/                          # pytest suite (2,400+ tests)
 ├── storage/                        # Downloaded videos, audio, generated output (gitignored)
 │
 ├── requirements.txt
@@ -382,7 +382,7 @@ ViralMint 采用 **GNU Affero 通用公共许可证 v3.0（AGPL-3.0）** 授权�
 
 ### 🙋 不想自托管？
 
-在 **[viralmint.net](https://viralmint.net)** 也有一个托管版本——同一套「发现 + 分析 + 生成」引擎，已签名并公证，无需接入任何 API 密钥（用预付额度替代 BYOK）。它是闭源的，且不会自动上传——对于宁愿不折腾自己密钥与安装的人，这是另一套取舍。完整对比 + FAQ：**[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**。否则，你需要的一切都在这里——继续往下读，然后 `python run.py`。
+在 **[viralmint.net](https://viralmint.net)** 也有一个托管版本——同一套「发现 + 分析 + 生成」引擎，已签名并公证，无需接入任何 API 密钥（用预付额度替代 BYOK）。它是闭源的，且完全没有上传功能——对于宁愿不折腾自己密钥与安装的人，这是另一套取舍。完整对比 + FAQ：**[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**。否则，你需要的一切都在这里——继续往下读，然后 `python run.py`。
 
 ---
 

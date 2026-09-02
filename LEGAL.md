@@ -57,7 +57,8 @@ related features.
 ### TikTok
 
 - **Uploading via OAuth (recommended):** uses TikTok's official Content
-  Posting API. Sanctioned use.
+  Posting API. Sanctioned use. The video lands in your account's drafts
+  (the API's inbox endpoint); you publish it from the TikTok app.
 - **Uploading via session cookie (advanced / discouraged):** the
   `tiktok-uploader` library acts as your browser. **This is against TikTok's
   Terms of Service.** It exists as a fallback for users who can't get

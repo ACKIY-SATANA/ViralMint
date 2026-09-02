@@ -6,7 +6,7 @@
 
 ### クリエイターのためのオープンソース・ローカルファーストな動画パイプライン
 
-**トレンド発掘 → 長尺動画をクリップ → AI ショート生成 → YouTube と TikTok へ自動投稿。**
+**トレンド発掘 → 長尺動画をクリップ → AI ショート生成 → 1本ずつ確認して YouTube と TikTok へアップロード。**
 すべて自分のマシン上で。自分の API キーを使用。間に SaaS なし。テレメトリなし。
 
 <!-- Activity badges (top row) — auto-update from GitHub, so they reflect
@@ -31,27 +31,27 @@
 
 <img src="docs/screenshots/clipper-bench.webp" alt="ViralMint Clip Studio — a cutting bench with a filmstrip timeline, speech lane and pending cuts" width="900" />
 
-<sub><i>長尺動画を本物のタイムラインでショートに — 元動画のフレームをドラッグし、文の境界にスナップし、あるいは AI に提案させる。トレンド発掘・文字起こし・AI 動画・モーショングラフィックス・公開まで、すべて同じアプリの中で動きます。</i></sub>
+<sub><i>長尺動画を本物のタイムラインでショートに — 元動画のフレームをドラッグし、文の境界にスナップし、あるいは AI に提案させる。トレンド発掘・文字起こし・AI 動画・モーショングラフィックス・アップロードまで、すべて同じアプリの中で動きます。</i></sub>
 
 </div>
 
 ---
 
 > **手動のクリエイターが十数個のタブとアプリを横断してやっていることを、ViralMint は1つのローカルワークフローとして実行します。**
-> YouTube・TikTok・Douyin を横断してトレンド動画を見つけ、ローカルの Whisper で文字起こし・分析し、長尺動画を公開できるショートに切り分け、好みの AI でオリジナル台本を書き、キャプション付きストック映像動画をレンダリングし、YouTube と TikTok へ直接投稿する。ブラウザから操作するのも、Telegram・WhatsApp・Discord・Slack でチャットするのも自由自在です。
+> YouTube・TikTok・Douyin を横断してトレンド動画を見つけ、ローカルの Whisper で文字起こし・分析し、長尺動画を公開できるショートに切り分け、好みの AI でオリジナル台本を書き、キャプション付きストック映像動画をレンダリングする。完成した動画は、あなたが Upload を押したときに YouTube へアップロードするか、TikTok の下書きへ送ります。ブラウザから操作するのも、Telegram・WhatsApp・Discord・Slack でチャットするのも自由自在です。
 
 ## ✨ ViralMint を選ぶ理由
 
 |   |   |
 |---|---|
 | 🔒 **100% ローカル** | SQLite、ローカル Whisper、ローカル FFmpeg。台本・文字起こし・ダウンロード・生成動画はマシンの外に出ません。 |
-| 🔑 **BYOK、仲介者なし** | 自分の Anthropic / OpenAI / OpenRouter / YouTube / Pexels キーを使用。AES-256 で暗号化して保存し、プロバイダーへ直接送信 — 間に ViralMint のサーバーはありません。 |
-| 🤖 **チャットのラッパーではなくエージェント** | 目的特化型の6つのエージェント — Planner、Scout、Download、Analyzer、Generator、そして **Uploader** — を、実際に処理を実行するストリーミング AI チャットがオーケストレーションします。 |
-| 📤 **投稿まで代行** | AI が下書きしたタイトル・説明文・タグ・サムネイル付きで、YouTube と TikTok へ直接アップロード。生成だけでなくループ全体をカバーします。 |
+| 🔑 **BYOK、仲介者なし** | 自分の Anthropic / OpenAI / OpenRouter / YouTube / Pexels キーを使用。Fernet（AES-128-CBC + HMAC-SHA256）で暗号化して保存し、プロバイダーへ直接送信 — 間に ViralMint のサーバーはありません。 |
+| 🤖 **チャットのラッパーではなくエージェント** | 目的特化型のエージェント群 — Planner、Scout、Download、Analyzer、Generator、そして **Uploader** — を、実際に処理を実行するストリーミング AI チャットがオーケストレーションします。 |
+| 📤 **アプリからアップロード** | AI が下書きしたタイトル・説明文・タグを確認してから、自分の OAuth アプリ経由で YouTube へアップロードするか、TikTok の下書きへ送ります。動画ごとにワンクリック — 自動で投稿されることはありません。 |
 | 📱 **スマホから操作** | Telegram・WhatsApp・Discord・Slack でプランナーと双方向チャット — 同じスレッドでジョブ通知も届きます。 |
-| 🆓 **すぐに無料で使える** | ローカル Whisper、Edge TTS（400以上の音声）、ロイヤリティフリー音楽、Pexels ストック、22の FFmpeg ツール — 重い処理はすべて $0。プラグインする AI のぶんだけ課金されます。 |
+| 🆓 **すぐに無料で使える** | ローカル Whisper、Edge TTS（400以上の音声）、ロイヤリティフリー音楽、Pexels ストック、22の内蔵ツール（ほとんどは FFmpeg + Whisper だけで動作） — 重い処理はすべて $0。プラグインする AI のぶんだけ課金されます。 |
 
-<sub>実戦仕込み: 毎コミットで **2,300テストの pytest スイート** と、実アプリをエンドツーエンドで操作するブラウザハーネスが走ります。AGPL-3.0 — フォークして、改変して、その上でビジネスを構築できます。</sub>
+<sub>実戦仕込み: 毎コミットで **2,400テストの pytest スイート** と、実アプリをエンドツーエンドで操作するブラウザハーネスが走ります。AGPL-3.0 — フォークして、改変して、その上でビジネスを構築できます。</sub>
 
 ---
 
@@ -103,8 +103,8 @@
 <tr>
 <td width="50%" valign="top">
 
-### 📤 Publish
-**YouTube**（OAuth）と **TikTok**（OAuth またはセッションクッキー）へ、プラットフォーム最適化されたタイトル・説明文・タグ・サムネイル付きで直接アップロード — 完成した動画が実際に投稿されます。
+### 📤 Upload
+**YouTube** へは Data API（自分の OAuth クライアント経由）で、AI が下書きしたタイトル・説明文・タグ付きで直接アップロード — 既定は公開で、Library・Clip Studio・チャットのボタンから、送信内容をそのまま表示する確認ダイアログを経て実行されます。**TikTok** へはアカウントの下書き（Content Posting API の inbox エンドポイント、自分の開発者アプリ経由）にアップロードし、投稿は TikTok アプリで仕上げます。セッションクッキーによるフォールバックもありますが TikTok の利用規約に反します — [LEGAL.md](LEGAL.md#tiktok) を参照。スケジュール投稿はなく、サムネイルはローカルで生成されますがアップロードはされません。
 
 </td>
 <td width="50%" valign="top">
@@ -173,7 +173,6 @@ YouTube / TikTok / Pexels には引き続き無料の API キーが必要です 
 | **Python 3.11+** | `brew install python` | `apt install python3.11` | [python.org](https://www.python.org/downloads/) |
 | **Node.js 18+** | `brew install node` | `apt install nodejs npm` | [nodejs.org](https://nodejs.org/) |
 | **FFmpeg** | `brew install ffmpeg` | `apt install ffmpeg` | [ffmpeg.org](https://ffmpeg.org/download.html) |
-| **ImageMagick** | `brew install imagemagick` | `apt install imagemagick` | [imagemagick.org](https://imagemagick.org/) |
 
 ### インストールと実行
 
@@ -207,7 +206,7 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
 
 ## 🔑 自分のキーを使う (BYOK)
 
-各キーは `.env` *または* アプリ内の **Settings** でユーザーごとに設定できます — 設定されているほうが優先されます。ユーザーごとのキーは保存前に **AES-256 で暗号化** されます。キーはプロバイダーへ直接送られ、間に入る ViralMint のバックエンドサーバーはありません。
+各キーは `.env` *または* アプリ内の **Settings** でユーザーごとに設定できます — 設定されているほうが優先されます。ユーザーごとのキーは保存前に **Fernet で暗号化**（AES-128-CBC + HMAC-SHA256）されます。キーはプロバイダーへ直接送られ、間に入る ViralMint のバックエンドサーバーはありません。
 
 | 用途 | プロバイダー | 場所 | コスト |
 |:----|:---------|:------|:-----|
@@ -216,7 +215,8 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
 | ストック映像 | Pexels | [pexels.com/api](https://www.pexels.com/api/) | 無料 |
 | プレミアムボイスオーバー（任意） | OpenAI TTS | [platform.openai.com](https://platform.openai.com/api-keys) | 従量課金 |
 | TikTok / Douyin 発掘 | **TikHub API**（推奨） | [tikhub.io](https://tikhub.io) | 無料枠あり |
-| YouTube / TikTok アップロード | OAuth | Settings でワンクリック | 無料 |
+| YouTube アップロード | 自分の Google Cloud OAuth クライアント — `.env` の `YOUTUBE_CLIENT_ID` / `SECRET`。未検証の API プロジェクトからのアップロードは、検証を通過するまで Google により*非公開*に制限されます | `.env` を設定してから Settings → Connect YouTube | 無料 |
+| TikTok アップロード（下書きへ） | Content Posting API を有効にした自分の TikTok 開発者アプリ — `.env` の `TIKTOK_CLIENT_KEY` / `SECRET`。セッションクッキーのフォールバックもありますが TikTok の利用規約に反します | `.env` を設定してから Settings → Connect TikTok | 無料 |
 | Telegram / Discord / Slack | Bot トークン | Settings → Messaging | 無料 |
 | WhatsApp | QR スキャンでペアリング | Settings → Messaging | 無料 |
 
@@ -247,7 +247,7 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
                      │  Generator Agent ─ Script → TTS → Stock →      │
                      │                    Captions → Music → MP4      │
                      │  Motion Renderer ─ local HyperFrames engine    │
-                     │  Uploader Agent ── YouTube + TikTok OAuth      │
+                     │  Uploader Agent ── YouTube · TikTok drafts     │
                      │  Messaging ─────── Telegram · WhatsApp ·       │
                      │                    Discord · Slack             │
                      └─────────────────┬──────────────────────────────┘
@@ -268,13 +268,13 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
 | **バックエンド** | Python 3.11+ · FastAPI · SQLAlchemy 2.0 (async) · SQLite · WebSockets |
 | **フロントエンド** | React 18 · Vite · MUI 7 · Zustand · React Router 6 |
 | **AI (BYOK)** | Anthropic Claude SDK · OpenAI SDK · OpenRouter (1つのキーで300以上のモデル) |
-| **文字起こし** | faster-whisper（ローカル、多言語、GPU 対応） |
+| **文字起こし** | faster-whisper（ローカル、多言語、CPU int8） |
 | **TTS** | Edge TTS（無料）· OpenAI TTS |
 | **動画** | Pexels ストック · FFmpeg · Ken Burns 画像フォールバック |
 | **キャプション** | FFmpeg + ASS（単語ごとのハイライトアニメーション） |
 | **ダウンロード** | yt-dlp (1,800+ sites) |
 | **メッセージング** | python-telegram-bot · discord.py · slack-sdk · neonize (WhatsApp) |
-| **セキュリティ** | 保存時の認証情報に Fernet (AES-256) |
+| **セキュリティ** | 保存時の認証情報に Fernet (AES-128-CBC + HMAC-SHA256) |
 
 ---
 
@@ -347,7 +347,7 @@ ViralMint/
 │       ├── hooks/                  # WebSocket, settings, jobs, source video
 │       └── store/                  # Zustand global state
 │
-├── tests/                          # pytest suite (2,300+ tests)
+├── tests/                          # pytest suite (2,400+ tests)
 ├── storage/                        # Downloaded videos, audio, generated output (gitignored)
 │
 ├── requirements.txt
@@ -382,7 +382,7 @@ ViralMint は **GNU Affero General Public License v3.0**（[LICENSE](LICENSE)）
 
 ### 🙋 セルフホストしたくない？
 
-**[viralmint.net](https://viralmint.net)** にホスト版のビルドもあります — 発掘・分析・生成のエンジンは同じで、署名・公証済み、設定する API キーもありません（BYOK の代わりにプリペイドクレジット）。クローズドソースで自動アップロードはしません — 自分でキーやインストールを管理したくない人向けの、異なるトレードオフです。詳しい比較と FAQ: **[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**。それ以外は、必要なものはすべてここにあります — 読み進めて `python run.py` を実行してください。
+**[viralmint.net](https://viralmint.net)** にホスト版のビルドもあります — 発掘・分析・生成のエンジンは同じで、署名・公証済み、設定する API キーもありません（BYOK の代わりにプリペイドクレジット）。クローズドソースで、アップローダー自体がありません — 自分でキーやインストールを管理したくない人向けの、異なるトレードオフです。詳しい比較と FAQ: **[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**。それ以外は、必要なものはすべてここにあります — 読み進めて `python run.py` を実行してください。
 
 ---
 
