@@ -103,42 +103,28 @@
 <tr>
 <td width="50%" valign="top">
 
-### 📤 自分で投稿 — またはアプリからアップロード
-完成した動画にはすべて AI が下書きしたタイトル・説明文・タグが付くので、投稿先にそのまま貼り付けられます。自分の Google OAuth クライアントを登録すれば、Library から YouTube へ直接アップロードもできます。TikTok は自分の開発者アプリ経由で下書きに送ることしかできません。どちらも自動では動きません — [LEGAL.md](LEGAL.md#tiktok) を参照。
-
-</td>
-<td width="50%" valign="top">
-
 ### 💬 Chat
-すべてのエージェントをオーケストレーションするストリーミング WebSocket チャット。*「料理動画を発掘して」* や *「この URL をダウンロードして」* と言えばそのまま実行。タップできるクイックリプライのチップ、コンポーザーをロックしない追加質問、リロードをまたいで残るリッチな結果カード。
+すべてのエージェントをオーケストレーションするストリーミング WebSocket チャット。*「料理動画を発掘して」* や *「この URL をダウンロードして」* と言えばそのまま実行。タップできるクイックリプライのチップ、コンポーザーをロックしない追加質問、リロードをまたいで残るリッチな結果カード。 チャットはあなたのライブなパイプラインを読み取り — *ダウンロード済みだが未クリップ*、*生成済みだが未投稿*、*発掘済みだが未ダウンロード* — 頼まれるのを待たずに、最も価値の高い次の一手を1つ提案します。
 
 </td>
-</tr>
-<tr>
 <td width="50%" valign="top">
 
 ### 📲 Messaging
 **Telegram・WhatsApp・Discord・Slack** でスマホから双方向チャット。どこからでもプランナーに指示し、ジョブが完了したら通知を受け取る — 同じエージェント、異なるトランスポート。
 
 </td>
+</tr>
+<tr>
 <td width="50%" valign="top">
 
 ### ⬇️ ユニバーサルダウンローダー
 内部は yt-dlp — YouTube・TikTok・Bilibili・Instagram・Twitter/X・SoundCloud・Vimeo、その他 **1,800以上のサイト** に対応。ウォーターマークなし、広告なし、上限なし。
 
 </td>
-</tr>
-<tr>
 <td width="50%" valign="top">
 
 ### 🧰 22の内蔵ツール
 単機能ユーティリティ — キャプション、リフレーム、GIF、速度、トリム、字幕、ウォーターマーク、結合、オートズーム、ミュージックビジュアライザー、ボイスオーバー、さらに AI ヘルパー（翻訳、メタデータ、フック分析、自動チャプター）。**ほとんどが FFmpeg + Whisper で100% ローカルに動作 — API キー不要。** それぞれにインラインの結果プレビューが付いています。
-
-</td>
-<td width="50%" valign="top">
-
-### ✨ プロアクティブアシスタント
-チャットはあなたのライブなパイプラインを読み取り — *ダウンロード済みだが未クリップ*、*生成済みだが未アップロード*、*発掘済みだが未ダウンロード* — 頼まれるのを待たずに、最も価値の高い次の一手を1つ提案します。
 
 </td>
 </tr>
@@ -215,8 +201,6 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
 | ストック映像 | Pexels | [pexels.com/api](https://www.pexels.com/api/) | 無料 |
 | プレミアムボイスオーバー（任意） | OpenAI TTS | [platform.openai.com](https://platform.openai.com/api-keys) | 従量課金 |
 | TikTok / Douyin 発掘 | **TikHub API**（推奨） | [tikhub.io](https://tikhub.io) | 無料枠あり |
-| YouTube アップロード | 自分の Google Cloud OAuth クライアント — `.env` の `YOUTUBE_CLIENT_ID` / `SECRET`。未検証の API プロジェクトからのアップロードは、検証を通過するまで Google により*非公開*に制限されます | `.env` を設定してから Settings → Connect YouTube | 無料 |
-| TikTok アップロード（下書きへ） | Content Posting API を有効にした自分の TikTok 開発者アプリ — `.env` の `TIKTOK_CLIENT_KEY` / `SECRET`。セッションクッキーのフォールバックもありますが TikTok の利用規約に反します | `.env` を設定してから Settings → Connect TikTok | 無料 |
 | Telegram / Discord / Slack | Bot トークン | Settings → Messaging | 無料 |
 | WhatsApp | QR スキャンでペアリング | Settings → Messaging | 無料 |
 
@@ -247,7 +231,6 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
                      │  Generator Agent ─ Script → TTS → Stock →      │
                      │                    Captions → Music → MP4      │
                      │  Motion Renderer ─ local HyperFrames engine    │
-                     │  Uploader Agent ── YouTube · TikTok drafts     │
                      │  Messaging ─────── Telegram · WhatsApp ·       │
                      │                    Discord · Slack             │
                      └─────────────────┬──────────────────────────────┘
@@ -333,7 +316,7 @@ ViralMint/
 ├── launcher.py                     # System-tray launcher (optional)
 │
 ├── backend/
-│   ├── agents/                     # Planner, Scout, Download, Analyzer, Generator, Uploader
+│   ├── agents/                     # Planner, Scout, Download, Analyzer, Generator
 │   ├── api/                        # REST + WebSocket endpoints
 │   ├── core/                       # AI client, BYOK key resolver, crypto, WebSocket manager
 │   ├── messaging/                  # Telegram / WhatsApp / Discord / Slack channels
@@ -376,7 +359,7 @@ ViralMint は **GNU Affero General Public License v3.0**（[LICENSE](LICENSE)）
 - ✅ その上に SaaS を運営してよい
 - ⚠️ 配布する場合（または公開ネットワークサービスとして運用する場合）、改変したソースを同じ AGPL-3.0 の条件で共有する必要があります
 
-**ViralMint は自分のマシンで動かすツールです。** メンテナーはあなたのコンテンツをホストせず、API 呼び出しをプロキシもしません — すべての操作は、あなた自身のプラットフォームとキーで、あなたが行うものです。発掘やダウンローダーの機能を使う前に [LEGAL.md](LEGAL.md) を読み、何が公認されており（YouTube Data API、OAuth アップロード、Pexels）、何が自己責任で（TikTok / Douyin のセッションクッキー発掘）、各プラットフォームの利用規約の下で何に対して責任を負うのかを理解してください。
+**ViralMint は自分のマシンで動かすツールです。** メンテナーはあなたのコンテンツをホストせず、API 呼び出しをプロキシもしません — すべての操作は、あなた自身のプラットフォームとキーで、あなたが行うものです。発掘やダウンローダーの機能を使う前に [LEGAL.md](LEGAL.md) を読み、何が公認されており（YouTube Data API、Pexels）、何が自己責任で（TikTok / Douyin のセッションクッキー発掘）、各プラットフォームの利用規約の下で何に対して責任を負うのかを理解してください。
 
 ---
 

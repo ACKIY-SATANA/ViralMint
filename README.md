@@ -103,42 +103,28 @@ One faceted view over everything you own — renders, downloads, every tool outp
 <tr>
 <td width="50%" valign="top">
 
-### 📤 Post it yourself — or upload from the app
-Every finished video comes with an AI-drafted title, description and tags to paste wherever you post. If you register your own Google OAuth client, the Library can also upload to YouTube directly; TikTok can only be reached as drafts, through your own developer app. Neither runs on its own — see [LEGAL.md](LEGAL.md#tiktok).
-
-</td>
-<td width="50%" valign="top">
-
 ### 💬 Chat
-Streaming WebSocket chat that orchestrates every agent. Say *"scout cooking videos"* or *"download this URL"* and it just runs. Tappable quick-reply chips, follow-up questions that never lock the composer, and rich result cards that persist across reloads.
+Streaming WebSocket chat that orchestrates every agent. Say *"scout cooking videos"* or *"download this URL"* and it just runs. Tappable quick-reply chips, follow-up questions that never lock the composer, and rich result cards that persist across reloads. The chat reads your live pipeline — *downloaded-but-not-clipped*, *generated-but-not-posted*, *scouted-but-not-downloaded* — and suggests the single highest-value next step instead of waiting to be asked.
 
 </td>
-</tr>
-<tr>
 <td width="50%" valign="top">
 
 ### 📲 Messaging
 Two-way chat from your phone via **Telegram, WhatsApp, Discord, Slack**. Command the planner from anywhere and get job alerts as they finish — same agent, different transport.
 
 </td>
+</tr>
+<tr>
 <td width="50%" valign="top">
 
 ### ⬇️ Universal downloader
 yt-dlp under the hood — YouTube, TikTok, Bilibili, Instagram, Twitter/X, SoundCloud, Vimeo, and **1,800+ other sites**. No watermarks, no ads, no cap.
 
 </td>
-</tr>
-<tr>
 <td width="50%" valign="top">
 
 ### 🧰 22 built-in tools
 Single-purpose utilities — captions, reframe, crop, compress, GIF, speed, trim, subtitles, watermark, merge, auto-zoom, music-visualizer, voice-over, silence removal, video download, plus AI helpers (translate, metadata, hook analysis, auto-chapters). **Most run 100% locally on FFmpeg + Whisper — no API key.** Each has an inline result preview and a history of what it produced.
-
-</td>
-<td width="50%" valign="top">
-
-### ✨ Proactive assistant
-The chat reads your live pipeline — *downloaded-but-not-clipped*, *generated-but-not-uploaded*, *scouted-but-not-downloaded* — and suggests the single highest-value next step instead of waiting to be asked.
 
 </td>
 </tr>
@@ -216,8 +202,6 @@ Every key can be set in `.env` *or* per-user inside the app under **Settings** �
 | Stock footage | Pexels | [pexels.com/api](https://www.pexels.com/api/) | Free |
 | Premium voiceover (optional) | OpenAI TTS | [platform.openai.com](https://platform.openai.com/api-keys) | Pay-per-use |
 | TikTok / Douyin scouting | **TikHub API** (recommended) | [tikhub.io](https://tikhub.io) | Free tier |
-| YouTube upload | Your own Google Cloud OAuth client — `YOUTUBE_CLIENT_ID` / `SECRET` in `.env`. Google restricts uploads from an unverified API project to *private* until the project passes verification | `.env`, then Settings → Connect YouTube | Free |
-| TikTok upload (to drafts) | Your own TikTok developer app with the Content Posting API — `TIKTOK_CLIENT_KEY` / `SECRET` in `.env`. Session-cookie fallback exists but breaks TikTok's ToS | `.env`, then Settings → Connect TikTok | Free |
 | Telegram / Discord / Slack | Bot tokens | Settings → Messaging | Free |
 | WhatsApp | QR-scan pairing | Settings → Messaging | Free |
 
@@ -248,7 +232,6 @@ Every key can be set in `.env` *or* per-user inside the app under **Settings** �
                      │  Generator Agent ─ Script → TTS → Stock →      │
                      │                    Captions → Music → MP4      │
                      │  Motion Renderer ─ local HyperFrames engine    │
-                     │  Uploader Agent ── YouTube · TikTok drafts     │
                      │  Messaging ─────── Telegram · WhatsApp ·       │
                      │                    Discord · Slack             │
                      └─────────────────┬──────────────────────────────┘
@@ -334,7 +317,7 @@ ViralMint/
 ├── launcher.py                     # System-tray launcher (optional)
 │
 ├── backend/
-│   ├── agents/                     # Planner, Scout, Download, Analyzer, Generator, Uploader
+│   ├── agents/                     # Planner, Scout, Download, Analyzer, Generator
 │   ├── api/                        # REST + WebSocket endpoints
 │   ├── core/                       # AI client, BYOK key resolver, crypto, WebSocket manager
 │   ├── messaging/                  # Telegram / WhatsApp / Discord / Slack channels
@@ -379,7 +362,7 @@ ViralMint is licensed under the **GNU Affero General Public License v3.0** ([LIC
 - ✅ Run a SaaS on top of it
 - ⚠️ If you distribute it (or run it as a public network service), you must share your modified source under the same AGPL-3.0 terms
 
-**ViralMint is a tool you run on your own machine.** The maintainers don't host your content or proxy your API calls — every action is you, acting on your own platforms and keys. Read [LEGAL.md](LEGAL.md) before using the scouting and downloader features so you understand what's sanctioned (YouTube Data API, OAuth uploads, Pexels), what's at-your-own-risk (TikTok/Douyin session-cookie scouting), and what you're responsible for under each platform's Terms of Service.
+**ViralMint is a tool you run on your own machine.** The maintainers don't host your content or proxy your API calls — every action is you, acting on your own platforms and keys. Read [LEGAL.md](LEGAL.md) before using the scouting and downloader features so you understand what's sanctioned (YouTube Data API, Pexels), what's at-your-own-risk (TikTok/Douyin session-cookie scouting), and what you're responsible for under each platform's Terms of Service.
 
 ---
 

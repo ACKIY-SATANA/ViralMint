@@ -22,7 +22,6 @@ This page explains the differences so you can pick the right one.
 | **Setup** | Clone, install deps, `python run.py` | Download a signed + notarized installer, sign in |
 | **API keys** | Bring your own (Anthropic / OpenAI / OpenRouter / YouTube / Pexels) | None — access routes through the cloud, billed as prepaid credits |
 | **Cost** | Free software; you pay your own provider bills | One-time prepaid top-ups + a small daily starter allowance |
-| **Upload from the app** | Optional: YouTube via your own Google OAuth client; TikTok only as drafts. Never automatic | ❌ You download the `.mp4` and post it yourself |
 | **Runs offline / private** | ✅ 100% local — keys, scripts, videos never leave your machine | Cloud-assisted for AI |
 | **Extras** | Core pipeline + Tools | Also: AI Music Studio, Visual Style preset, Translate-and-Dub, polished Tools |
 | **Best for** | Developers who want full control and their own keys | Creators who want zero setup and one bill |
@@ -52,14 +51,9 @@ Pexels keys, stored encrypted on your machine. The
 [hosted version](https://viralmint.net) needs no keys; all provider access is
 handled for you and billed as prepaid credits.
 
-### Does ViralMint auto-upload to YouTube and TikTok?
-No build posts anything on its own. The self-host build ships an **Uploader
-agent** you trigger per video: it uploads to YouTube through your own Google OAuth
-client (Google keeps uploads from an unverified API project private), and to your
-TikTok drafts through your own TikTok developer app — you finish the post in the
-TikTok app. The [hosted version](https://viralmint.net) has no uploader at all — it
-generates the video and drafts the title/description/tags, and you download the
-`.mp4` and post it manually.
+### Does ViralMint post to YouTube or TikTok for me?
+No. Both builds hand you the finished `.mp4` plus an AI-drafted title, description
+and tags; you post it yourself.
 
 ### What can it do without any paid API keys?
 A lot runs 100% locally for free: video downloading from 1000+ sites (yt-dlp),

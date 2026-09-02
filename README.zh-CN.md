@@ -103,42 +103,28 @@
 <tr>
 <td width="50%" valign="top">
 
-### 📤 自己发布——或从应用内上传
-每条成片都附带 AI 起草的标题、描述和标签，粘贴到你发布的任何地方即可。如果你注册了自己的 Google OAuth 客户端，Library 也可以直接上传到 YouTube；TikTok 只能通过你自己的开发者应用送入草稿箱。两者都不会自动运行——见 [LEGAL.md](LEGAL.md#tiktok)。
-
-</td>
-<td width="50%" valign="top">
-
 ### 💬 Chat（对话）
-流式 WebSocket 对话，统一编排每一个智能体。说一句 *「去发现做菜的视频」* 或 *「下载这个链接」*，它就直接跑起来。可点按的快捷回复标签、绝不锁住输入框的追问，以及刷新后依然保留的富结果卡片。
+流式 WebSocket 对话，统一编排每一个智能体。说一句 *「去发现做菜的视频」* 或 *「下载这个链接」*，它就直接跑起来。可点按的快捷回复标签、绝不锁住输入框的追问，以及刷新后依然保留的富结果卡片。 对话会读取你的实时流水线——*已下载但未切片*、*已生成但未发布*、*已发现但未下载*——并主动建议价值最高的那一步，而不是干等你开口。
 
 </td>
-</tr>
-<tr>
 <td width="50%" valign="top">
 
 ### 📲 Messaging（消息）
 通过 **Telegram、WhatsApp、Discord、Slack** 从手机双向对话。随时随地指挥规划智能体，并在任务完成时收到提醒——同一个智能体，不同的通道。
 
 </td>
+</tr>
+<tr>
 <td width="50%" valign="top">
 
 ### ⬇️ 通用下载器
 底层由 yt-dlp 驱动——支持 YouTube、TikTok、Bilibili、Instagram、Twitter/X、SoundCloud、Vimeo，以及 **1,800+ 其他站点**。无水印、无广告、不限量。
 
 </td>
-</tr>
-<tr>
 <td width="50%" valign="top">
 
 ### 🧰 22 个内置工具
 单一用途的小工具——字幕、重构图、GIF、变速、裁剪、字幕文件、水印、合并、自动缩放、音乐可视化、配音，外加 AI 助手（翻译、元数据、钩子分析、自动章节）。**大多数 100% 本地运行于 FFmpeg + Whisper——无需 API 密钥。** 每个都带内嵌的结果预览。
-
-</td>
-<td width="50%" valign="top">
-
-### ✨ 主动式助手
-对话会读取你的实时流水线——*已下载但未切片*、*已生成但未上传*、*已发现但未下载*——并主动建议价值最高的那一步，而不是干等你开口。
 
 </td>
 </tr>
@@ -215,8 +201,6 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
 | 素材视频 | Pexels | [pexels.com/api](https://www.pexels.com/api/) | 免费 |
 | 高级配音（可选） | OpenAI TTS | [platform.openai.com](https://platform.openai.com/api-keys) | 按用量付费 |
 | TikTok / 抖音发现 | **TikHub API**（推荐） | [tikhub.io](https://tikhub.io) | 有免费额度 |
-| YouTube 上传 | 你自己的 Google Cloud OAuth 客户端——`.env` 中的 `YOUTUBE_CLIENT_ID` / `SECRET`。Google 会把未通过验证的 API 项目上传的视频限制为*私密*，直到项目通过验证 | 先填 `.env`，再到设置中连接 YouTube | 免费 |
-| TikTok 上传（到草稿箱） | 你自己的 TikTok 开发者应用，需开通 Content Posting API——`.env` 中的 `TIKTOK_CLIENT_KEY` / `SECRET`。会话 Cookie 兜底方式存在，但违反 TikTok 服务条款 | 先填 `.env`，再到设置中连接 TikTok | 免费 |
 | Telegram / Discord / Slack | Bot 令牌 | 设置 → Messaging | 免费 |
 | WhatsApp | 扫码配对 | 设置 → Messaging | 免费 |
 
@@ -247,7 +231,6 @@ PYTHON_BIN=./venv/bin/python VIRALMINT_VERSION=0.1.0-dev \
                      │  Generator Agent ─ Script → TTS → Stock →      │
                      │                    Captions → Music → MP4      │
                      │  Motion Renderer ─ local HyperFrames engine    │
-                     │  Uploader Agent ── YouTube · TikTok drafts     │
                      │  Messaging ─────── Telegram · WhatsApp ·       │
                      │                    Discord · Slack             │
                      └─────────────────┬──────────────────────────────┘
@@ -333,7 +316,7 @@ ViralMint/
 ├── launcher.py                     # System-tray launcher (optional)
 │
 ├── backend/
-│   ├── agents/                     # Planner, Scout, Download, Analyzer, Generator, Uploader
+│   ├── agents/                     # Planner, Scout, Download, Analyzer, Generator
 │   ├── api/                        # REST + WebSocket endpoints
 │   ├── core/                       # AI client, BYOK key resolver, crypto, WebSocket manager
 │   ├── messaging/                  # Telegram / WhatsApp / Discord / Slack channels
@@ -376,7 +359,7 @@ ViralMint 采用 **GNU Affero 通用公共许可证 v3.0（AGPL-3.0）** 授权�
 - ✅ 可以在它之上运营 SaaS
 - ⚠️ 若你对外分发它（或将其作为公开的网络服务运行），必须以相同的 AGPL-3.0 条款公开修改后的源码
 
-**ViralMint 是一个你在自己机器上运行的工具。** 维护者既不托管你的内容，也不代理你的 API 调用——每一步动作都是你在用自己的平台和密钥亲自完成。使用发现与下载功能前，请先读 [LEGAL.md](LEGAL.md)，弄清楚哪些是被认可的（YouTube Data API、OAuth 上传、Pexels）、哪些是自担风险的（TikTok/抖音会话 Cookie 发现），以及在各平台服务条款下你需要为哪些内容负责。
+**ViralMint 是一个你在自己机器上运行的工具。** 维护者既不托管你的内容，也不代理你的 API 调用——每一步动作都是你在用自己的平台和密钥亲自完成。使用发现与下载功能前，请先读 [LEGAL.md](LEGAL.md)，弄清楚哪些是被认可的（YouTube Data API、Pexels）、哪些是自担风险的（TikTok/抖音会话 Cookie 发现），以及在各平台服务条款下你需要为哪些内容负责。
 
 ---
 
