@@ -6,7 +6,7 @@
 
 ### 面向创作者的开源、本地优先视频流水线
 
-**发现趋势 → 切片长视频 → 生成 AI 短视频 → 逐条确认后上传到 YouTube 与 TikTok。**
+**发现趋势 → 切片长视频 → 生成带字幕的短视频 → 设计动态图形 → 用 22 个本地工具精修。**
 全部在你自己的机器上运行。自带 API 密钥。中间没有任何 SaaS。零遥测。
 
 <!-- Activity badges (top row) — auto-update from GitHub, so they reflect
@@ -31,14 +31,14 @@
 
 <img src="docs/screenshots/clipper-bench.webp" alt="ViralMint Clip Studio — a cutting bench with a filmstrip timeline, speech lane and pending cuts" width="900" />
 
-<sub><i>在真正的时间轴上把长视频切成短视频——在它自己的帧上拖拽、吸附到句子边界，或者让 AI 先提议。发现选题、转写、AI 视频、动态图形与上传，全都在同一个应用里。</i></sub>
+<sub><i>在真正的时间轴上把长视频切成短视频——在它自己的帧上拖拽、吸附到句子边界，或者让 AI 先提议。发现选题、转写、AI 视频、动态图形与 22 个剪辑工具，全都在同一个应用里。</i></sub>
 
 </div>
 
 ---
 
 > **手动创作者要在十几个标签页和应用之间来回折腾的事，ViralMint 用一条本地工作流全部搞定。**
-> 跨 YouTube、TikTok 和抖音发现热门视频，用本地 Whisper 转写并分析，把长视频切成可发布的短视频，用你选择的 AI 撰写原创脚本，渲染带字幕的素材视频——然后在你点击「上传」时，把成片上传到 YouTube，或送入你的 TikTok 草稿箱。可以在浏览器里驱动它，也可以在 Telegram、WhatsApp、Discord 或 Slack 上跟它聊。
+> 跨 YouTube、TikTok 和抖音发现热门视频，用本地 Whisper 转写并分析，把长视频切成可发布的短视频，用你选择的 AI 撰写原创脚本，渲染带字幕的素材视频——最后交给你一条成品 MP4，附带 AI 起草的标题、描述和标签，随时可以发布。可以在浏览器里驱动它，也可以在 Telegram、WhatsApp、Discord 或 Slack 上跟它聊。
 
 ## ✨ 为什么选择 ViralMint
 
@@ -46,8 +46,8 @@
 |---|---|
 | 🔒 **100% 本地** | SQLite、本地 Whisper、本地 FFmpeg。你的脚本、转写、下载和生成的视频永不离开你的机器。 |
 | 🔑 **BYOK，无中间商** | 使用你自己的 Anthropic / OpenAI / OpenRouter / YouTube / Pexels 密钥，落盘时以 Fernet（AES-128-CBC + HMAC-SHA256）加密，直接发往服务提供方——中间没有任何 ViralMint 服务器。 |
-| 🤖 **是智能体架构，不是套壳聊天** | 各司其职的智能体——Planner、Scout、Download、Analyzer、Generator 和 **Uploader（上传智能体）**——由一个真正会去执行工作的流式 AI 对话统一编排。 |
-| 📤 **在应用内上传** | 先审阅 AI 起草的标题、描述和标签，再通过你自己的 OAuth 应用上传到 YouTube，或推送到你的 TikTok 草稿箱。每条视频点一次——绝不会自动发布。 |
+| 🤖 **是智能体架构，不是套壳聊天** | 各司其职的智能体——Planner、Scout、Download、Analyzer 和 Generator——由一个真正会去执行工作的流式 AI 对话统一编排。 |
+| ✂️ **剪、生成或设计** | 通往成片的三条路：在真正的时间轴上从长视频剪出短视频；用脚本生成带字幕的素材视频；或者完全不用素材，直接创作动态图形。 |
 | 📱 **用手机随时随地掌控** | 通过 Telegram、WhatsApp、Discord 或 Slack 与规划智能体（Planner）双向对话——任务提醒也发到同一个会话里。 |
 | 🆓 **开箱即免费** | 本地 Whisper、Edge TTS（400+ 语音）、免版税音乐、Pexels 素材，以及 22 个内置工具（大多只靠 FFmpeg + Whisper）——最重的活儿花费 $0。只为你主动选择接入的 AI 付费。 |
 
@@ -103,8 +103,8 @@
 <tr>
 <td width="50%" valign="top">
 
-### 📤 Upload（上传）
-直接上传到 **YouTube**（Data API，走你自己的 OAuth 客户端），附带 AI 起草的标题、描述和标签——默认公开，从 Library、Clip Studio 或聊天中的按钮触发，上传前会先弹出确认框，展示即将发出的全部内容。**TikTok** 上传到你账号的草稿箱（Content Posting API 的 inbox 端点，走你自己的开发者应用），由你在 TikTok 应用里完成发布；也有会话 Cookie 的兜底方式，但它违反 TikTok 服务条款——见 [LEGAL.md](LEGAL.md#tiktok)。没有任何定时发布，缩略图在本地生成但不会上传。
+### 📤 自己发布——或从应用内上传
+每条成片都附带 AI 起草的标题、描述和标签，粘贴到你发布的任何地方即可。如果你注册了自己的 Google OAuth 客户端，Library 也可以直接上传到 YouTube；TikTok 只能通过你自己的开发者应用送入草稿箱。两者都不会自动运行——见 [LEGAL.md](LEGAL.md#tiktok)。
 
 </td>
 <td width="50%" valign="top">
@@ -382,7 +382,7 @@ ViralMint 采用 **GNU Affero 通用公共许可证 v3.0（AGPL-3.0）** 授权�
 
 ### 🙋 不想自托管？
 
-在 **[viralmint.net](https://viralmint.net)** 也有一个托管版本——同一套「发现 + 分析 + 生成」引擎，已签名并公证，无需接入任何 API 密钥（用预付额度替代 BYOK）。它是闭源的，且完全没有上传功能——对于宁愿不折腾自己密钥与安装的人，这是另一套取舍。完整对比 + FAQ：**[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**。否则，你需要的一切都在这里——继续往下读，然后 `python run.py`。
+在 **[viralmint.net](https://viralmint.net)** 也有一个托管版本——同一套「发现 + 分析 + 生成」引擎，已签名并公证，无需接入任何 API 密钥（用预付额度替代 BYOK）。它是闭源的——对于宁愿不折腾自己密钥与安装的人，这是另一套取舍。完整对比 + FAQ：**[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**。否则，你需要的一切都在这里——继续往下读，然后 `python run.py`。
 
 ---
 

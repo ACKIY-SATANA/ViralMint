@@ -5,7 +5,7 @@
 [project]
 name = "viralmint"
 version = "1.0.0"
-description = "Open-source viral content pipeline — scout, analyze, generate, publish."
+description = "Open-source video pipeline (clipper, AI video & more) — scout trends, clip long videos, generate captioned shorts, design motion graphics. Local-first, BYOK."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0-only" }

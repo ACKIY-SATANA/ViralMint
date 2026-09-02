@@ -7,8 +7,7 @@ word-by-word captions and background music, and extracts viral clips from long
 videos. You can run it two ways, from the same engine:
 
 - **Self-host** — this open-source repository (AGPL-3.0). Your machine, your API
-  keys, includes an Uploader agent — one click per video sends it to YouTube or to
-  your TikTok drafts (nothing posts automatically).
+  keys.
 - **Hosted** — the managed desktop app at
   **[viralmint.net](https://viralmint.net)**. No install of dependencies, no API
   keys to wire up, prepaid credits with a small daily starter allowance.
@@ -23,7 +22,7 @@ This page explains the differences so you can pick the right one.
 | **Setup** | Clone, install deps, `python run.py` | Download a signed + notarized installer, sign in |
 | **API keys** | Bring your own (Anthropic / OpenAI / OpenRouter / YouTube / Pexels) | None — access routes through the cloud, billed as prepaid credits |
 | **Cost** | Free software; you pay your own provider bills | One-time prepaid top-ups + a small daily starter allowance |
-| **Upload from the app** | ✅ One click per video: YouTube (your own OAuth app) or TikTok drafts. Never automatic | ❌ You download the `.mp4` and post it yourself |
+| **Upload from the app** | Optional: YouTube via your own Google OAuth client; TikTok only as drafts. Never automatic | ❌ You download the `.mp4` and post it yourself |
 | **Runs offline / private** | ✅ 100% local — keys, scripts, videos never leave your machine | Cloud-assisted for AI |
 | **Extras** | Core pipeline + Tools | Also: AI Music Studio, Visual Style preset, Translate-and-Dub, polished Tools |
 | **Best for** | Developers who want full control and their own keys | Creators who want zero setup and one bill |
@@ -33,8 +32,7 @@ This page explains the differences so you can pick the right one.
 ### What is ViralMint?
 ViralMint is an open-source viral-content video pipeline: an AI agent that scouts
 trends, analyzes competitors, generates videos, extracts clips from long-form
-footage, and (in the self-host build) uploads a finished video to YouTube or your
-TikTok drafts when you click Upload. It runs
+footage. It runs
 as a desktop app controlled from your browser, or from Telegram, WhatsApp, Discord
 and Slack.
 
