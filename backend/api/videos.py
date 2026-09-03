@@ -56,6 +56,14 @@ async def list_videos(
     pruned = 0
     passes = 0
     _MAX_PASSES = 5  # bounds the work when a whole tail of rows is orphaned
+    # Distinguish a missing FILE from a missing VOLUME: with the storage
+    # root itself absent (external drive asleep/unmounted, VIRALMINT_DATA_DIR
+    # on removable media), every row's is_file() is False and this prune
+    # would delete the user's entire video table + sibling files on a single
+    # page load. Skip pruning entirely until storage is back; rows render as
+    # they are and the next healthy request prunes true orphans.
+    from backend.config import settings as _settings
+    _storage_present = _settings.STORAGE_ROOT.exists()
     while True:
         passes += 1
         # Rows already kept occupy [offset, offset + len(live)) in the CURRENT
@@ -70,7 +78,7 @@ async def list_videos(
             break
         pruned_this_pass = 0
         for v in page:
-            if v.video_path and not Path(v.video_path).is_file():
+            if _storage_present and v.video_path and not Path(v.video_path).is_file():
                 try:
                     for ps in (v.video_path, v.audio_path,
                                v.thumbnail_path, v.video_path_landscape):

@@ -1,8 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2025-2026 ViralMint Contributors
 """Shared video utility functions — used across multiple services."""
+import logging
+import math
 import subprocess
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def probe_duration(file_path: Path | str, default: float = 0.0) -> float:
@@ -33,8 +37,16 @@ def probe_media(file_path: Path | str) -> tuple[int, int, float]:
 
     Prefer this over calling a dimensions probe and `probe_duration`
     back-to-back — a caller that needs both otherwise spawns two subprocesses
-    per file, which adds up on a pipeline that touches every clip. Returns
-    (0, 0, 0.0) on any failure; callers decide the fallback.
+    per file, which adds up on a pipeline that touches every clip. Returns 0
+    for whichever fields could not be read; callers decide the fallback.
+
+    The three fields fail INDEPENDENTLY. This used to parse all-or-nothing,
+    so a container whose format carries no duration — ffprobe prints a
+    literal "N/A", and `float("N/A")` raises — threw away perfectly good
+    dimensions and returned (0, 0, 0.0). Every dimension consumer defaults to
+    9:16 on zeros (`aspect_from_dims`), so a 1920x1080 elementary stream was
+    labelled portrait, and the caption geometry took that label: wrong
+    margins and font size, burned into the file. Read each field on its own.
     """
     try:
         result = subprocess.run(
@@ -49,13 +61,25 @@ def probe_media(file_path: Path | str) -> tuple[int, int, float]:
             text=True,
             timeout=15,
         )
-        # Output is one value per line: width, height, duration.
-        parts = [p for p in result.stdout.strip().splitlines() if p.strip()]
-        if len(parts) < 3:
-            return 0, 0, 0.0
-        return int(parts[0]), int(parts[1]), float(parts[2])
     except Exception:
         return 0, 0, 0.0
+
+    # Output is one value per line, in this order: width, height, duration.
+    parts = [p for p in result.stdout.strip().splitlines() if p.strip()]
+
+    def _num(index: int, cast):
+        try:
+            return cast(parts[index])
+        except (IndexError, TypeError, ValueError):
+            return cast(0)
+
+    width, height = _num(0, int), _num(1, int)
+    duration = _num(2, float)
+    # A negative or non-finite duration is as unusable as a missing one, and
+    # both reach ffmpeg as a seek bound downstream.
+    if not math.isfinite(duration) or duration < 0:
+        duration = 0.0
+    return width, height, duration
 
 
 # Aspect labels the app stores on GeneratedVideo.aspect_ratio and keys its
@@ -85,6 +109,14 @@ def aspect_label(file_path: Path | str, default: str = "9:16") -> str:
     fails so a missing ffprobe never breaks a save.
     """
     w, h, _ = probe_media(file_path)
+    if w <= 0 or h <= 0:
+        # Loud, because it is not cosmetic: the caption engine takes this
+        # label too, so a probe that quietly fails under load burns portrait
+        # margins into a landscape video.
+        logger.warning(
+            "aspect probe failed for %s — falling back to %s; captions and the "
+            "Library tile will use that shape", file_path, default,
+        )
     return aspect_from_dims(w, h, default=default)
 
 

@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2025-2026 ViralMint Contributors
 """REST /api/downloaded — downloaded & analyzed competitor videos."""
+import asyncio
 import json
 import logging
+import math
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -1385,6 +1387,9 @@ def _immutable_image(path: Path):
     )
 
 
+_STRIP_BUILD_LOCKS: dict[str, asyncio.Lock] = {}
+
+
 @router.get("/downloaded/{video_id}/filmstrip")
 async def get_downloaded_filmstrip(
     video_id: str,
@@ -1431,11 +1436,20 @@ async def get_downloaded_filmstrip(
     if out.exists() and out.stat().st_size > 0:
         return _immutable_image(out)
 
-    from backend.services.ffmpeg_service import extract_filmstrip
-    made = await extract_filmstrip(
-        video_path=src, output_path=out, count=n, tile_height=h,
-        duration=video.duration_seconds or None,
-    )
+    # Single-flight per cache key: the Timeline strip and SourceBench's
+    # denser warm-up sprite can race the same (n,h) after a resize, and an
+    # uncached strip build is up to ~96 ffmpeg seeks — two concurrent
+    # requests used to each pay the full build. The dict stays small
+    # (sources × param combos) and entries are reused, so no eviction.
+    lock = _STRIP_BUILD_LOCKS.setdefault(out.name, asyncio.Lock())
+    async with lock:
+        if out.exists() and out.stat().st_size > 0:
+            return _immutable_image(out)
+        from backend.services.ffmpeg_service import extract_filmstrip
+        made = await extract_filmstrip(
+            video_path=src, output_path=out, count=n, tile_height=h,
+            duration=video.duration_seconds or None,
+        )
     if not made:
         raise HTTPException(status_code=422,
                             detail="Could not build a filmstrip for this video")
@@ -1487,6 +1501,13 @@ async def get_downloaded_frame(
     except OSError:
         raise HTTPException(status_code=404, detail="Video file not readable")
 
+    # Query(ge=0.0) passes `inf` (inf >= 0), and with an unknown duration
+    # (fresh import, analyzer not run yet) the tail clamp below is skipped —
+    # int(round(inf * 10)) is an OverflowError → naked 500, and a huge finite
+    # t spawns a doomed 30s-timeout ffmpeg per request. Bound it regardless.
+    if not math.isfinite(t):
+        raise HTTPException(status_code=422, detail="t must be a finite number")
+    t = min(float(t), 863999.0)              # ~10 days; no real source is longer
     duration = video.duration_seconds or 0
     if duration:
         # Never seek past the last decodable frame — the same tail rule the

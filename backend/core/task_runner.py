@@ -883,6 +883,7 @@ async def run_suggest_clips(
     from backend.models.user_settings import UserSettings
     from backend.services.clip_extractor import (
         _load_or_transcribe_segments,
+        _raise_if_cancelled,
         _remove_overlapping_clips,
         _select_clip_windows_with_retries,
     )
@@ -918,6 +919,14 @@ async def run_suggest_clips(
             raise ValueError(
                 "This video has no speech to analyse — drag your own ranges instead"
             )
+
+        # Cancellation gates, same discipline as run_extract_clips: nothing
+        # interrupts this coroutine, so without them a cancel during the
+        # multi-minute Whisper phase let the runner carry on, make the
+        # selection call anyway, and then OVERWRITE the user's "cancelled"
+        # with "success" (terminal→terminal writes are deliberately allowed),
+        # so the bench adopted proposals the user had cancelled.
+        await _raise_if_cancelled(job_id)
 
         await update_job_status(job_id, "running", progress_pct=55,
                                 current_step="Finding the strongest moments...")
@@ -972,6 +981,9 @@ async def run_suggest_clips(
         } for w in clean[:max_clips]]
         suggestions.sort(key=lambda s: s["start"])
 
+        # Second gate: the selection call is the long pole after Whisper.
+        await _raise_if_cancelled(job_id)
+
         await update_job_status(
             job_id, "success", progress_pct=100,
             current_step=f"Found {len(suggestions)} moment(s)",
@@ -985,6 +997,12 @@ async def run_suggest_clips(
         logger.info("TASK CANCELLED suggest_clips | job=%s", job_id[:8])
         raise
     except Exception as e:
+        from backend.core.exceptions import JobCancelledError
+        if isinstance(e, JobCancelledError):
+            # Quiet stop, not a failure — mirrors run_extract_clips.
+            logger.info("TASK CANCELLED suggest_clips | job=%s (user cancel honoured)", job_id[:8])
+            await update_job_status(job_id, "cancelled", current_step="Cancelled")
+            return
         logger.error("TASK FAILED suggest_clips | job=%s: %s", job_id[:8], e, exc_info=True)
         await update_job_status(job_id, "failed", error_message=str(e))
 
@@ -1104,6 +1122,20 @@ async def run_extract_clips(
                 return f"{source_title} — {reason}"
             return f"{source_title} — clip {idx + 1}"
 
+        # A clip whose parallel probe failed reaches here with aspect None
+        # (see _probe_one) — re-probe the finished file once rather than
+        # guessing 9:16, so the Library tile and the player frame stay honest.
+        from backend.services.video_utils import aspect_label
+
+        async def _fallback_aspect(c: dict) -> str:
+            path = c.get("video_path")
+            if path:
+                try:
+                    return await asyncio.to_thread(aspect_label, Path(path))
+                except Exception:
+                    pass
+            return "9:16"
+
         # Save each clip as a GeneratedVideo record with all new fields
         clip_ids = []
         async with AsyncSessionLocal() as db:
@@ -1119,7 +1151,8 @@ async def run_extract_clips(
                     # a square / 4:5 source keeps its own shape and used to be
                     # persisted as "9:16" — which is what the Library sizes the
                     # tile from and what the aspect filter chips match on.
-                    aspect_ratio=clip.get("aspect_ratio") or "9:16",
+                    aspect_ratio=clip.get("aspect_ratio")
+                    or await _fallback_aspect(clip),
                     duration_seconds=clip.get("duration_seconds"),
                     gen_tier="clip_extraction",
                     source_type="clip_extraction",

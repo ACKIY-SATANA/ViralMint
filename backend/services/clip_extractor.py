@@ -40,6 +40,23 @@ _ALLOWED_HOOK_TYPES = frozenset({
 })
 
 
+# The OpenAI and Anthropic SDKs both raise these class NAMES for the
+# refusals that no retry can fix (matched by name so neither SDK has to be
+# importable here). AIProviderError covers the app's own classification,
+# AIKeyMissingError included.
+_PROVIDER_REFUSAL_NAMES = frozenset({
+    "AuthenticationError", "PermissionDeniedError", "RateLimitError",
+    "NotFoundError",
+})
+
+
+def _is_provider_refusal(e: BaseException) -> bool:
+    from backend.core.exceptions import AIProviderError
+    if isinstance(e, AIProviderError):
+        return True
+    return any(k.__name__ in _PROVIDER_REFUSAL_NAMES for k in type(e).__mro__)
+
+
 async def _ffmpeg_limited(coro):
     """Wrap an ffmpeg-using coroutine in the global ffmpeg-work semaphore so
     a single big extract (e.g. 18 clips) can't fire 18 parallel ffmpegs at
@@ -449,8 +466,14 @@ def _parse_timestamp(value) -> float:
         raise ValueError("empty timestamp")
     if isinstance(value, (int, float)):
         out = float(value)
+        # NaN slips through every later comparison (end<=start, beyond-EOF
+        # are all False against NaN) and reaches ffmpeg as `-ss nan`, turning
+        # a bad range into an opaque "No clips were extracted" job failure
+        # instead of this 400. json.loads accepts bare NaN/Infinity.
         if out < 0:
             raise ValueError(f"negative timestamp: {value}")
+        if not math.isfinite(out):
+            raise ValueError(f"non-finite timestamp: {value}")
         return out
     s = str(value).strip()
     if not s:
@@ -1798,6 +1821,14 @@ async def _select_clip_windows(
                     f"Response length={len(response)}, first 300 chars: {response[:300]}"
                 )
         except Exception as e:
+            # A provider REFUSAL must propagate, not degrade: returning []
+            # here marches a bad key, a revoked model or a rate limit through
+            # the relax-retries into the duration-based fallback, which cuts
+            # arbitrary time slices and labels them viral clips with no word
+            # about why. The fallback is for "the AI genuinely found nothing",
+            # never for "the call could not be made".
+            if _is_provider_refusal(e):
+                raise
             logger.warning(f"AI clip selection attempt {attempt + 1} failed: {e}")
 
     if not windows:
@@ -2077,7 +2108,11 @@ async def _process_clips_parallel(
         if not isinstance(path, Path):
             return None
         w, h, dur = await asyncio.to_thread(probe_media, path)
-        return {"aspect": aspect_from_dims(w, h), "duration": dur}
+        # default=None, NOT "9:16": a failed/timed-out probe must stay
+        # UNKNOWN so the save loop re-probes the file, rather than labelling
+        # a landscape clip 9:16 — the exact mislabel the probe was added to
+        # fix, resurfacing only under load.
+        return {"aspect": aspect_from_dims(w, h, default=None), "duration": dur}
 
     clip_probes = await asyncio.gather(
         *[_probe_one(cr) for cr in caption_results], return_exceptions=True,

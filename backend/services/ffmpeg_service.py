@@ -256,19 +256,34 @@ async def extract_thumbnail(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _extract():
+        # Temp-then-replace, and refuse an empty frame: this output is
+        # backfilled as a row's permanent thumbnail and served from the
+        # thumbnails cache, so a half-written or 0-byte JPEG at the final
+        # path is a broken image the Library keeps showing.
+        import uuid
+        tmp = output_path.with_name(
+            f"{output_path.stem}.{uuid.uuid4().hex[:8]}.tmp{output_path.suffix}")
         cmd = [
             "ffmpeg", "-y",
             "-i", str(video_path),
             "-ss", str(timestamp),
             "-vframes", "1",
             "-q:v", "2",
-            str(output_path),
+            str(tmp),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            logger.warning("Thumbnail extraction failed for %s: %s",
-                           video_path.name, ffmpeg_error(result.stderr))
-            return None
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                logger.warning("Thumbnail extraction failed for %s: %s",
+                               video_path.name, ffmpeg_error(result.stderr))
+                return None
+            if not tmp.exists() or tmp.stat().st_size == 0:
+                logger.warning("Thumbnail extraction produced an empty file for %s",
+                               video_path.name)
+                return None
+            tmp.replace(output_path)
+        finally:
+            tmp.unlink(missing_ok=True)
         return output_path
 
     return await asyncio.to_thread(_extract)
@@ -1261,6 +1276,13 @@ async def extract_frame_at(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _extract():
+        # Write to a unique temp sibling, then os.replace: this file is a
+        # cache entry served with immutable headers, and building it in
+        # place let a concurrent request stat a half-written JPEG and pin
+        # the truncated bytes in the browser for a year.
+        import uuid
+        tmp = output_path.with_name(
+            f"{output_path.stem}.{uuid.uuid4().hex[:8]}.tmp{output_path.suffix}")
         cmd = [
             "ffmpeg", "-y",
             "-ss", str(max(0.0, float(timestamp))),  # -ss BEFORE -i = fast seek
@@ -1271,18 +1293,21 @@ async def extract_frame_at(
         if scale_width:
             # -2 keeps the height even and the aspect intact.
             cmd += ["-vf", f"scale={int(scale_width)}:-2"]
-        cmd.append(str(output_path))
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            logger.warning(
-                "Frame extract failed at t=%.2fs for %s: %s",
-                timestamp, video_path.name, ffmpeg_error(result.stderr, 200),
-            )
-            return None
-        if not output_path.exists() or output_path.stat().st_size == 0:
-            logger.warning("Frame extract produced an empty file at t=%.2fs", timestamp)
-            output_path.unlink(missing_ok=True)
-            return None
+        cmd.append(str(tmp))
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                logger.warning(
+                    "Frame extract failed at t=%.2fs for %s: %s",
+                    timestamp, video_path.name, ffmpeg_error(result.stderr, 200),
+                )
+                return None
+            if not tmp.exists() or tmp.stat().st_size == 0:
+                logger.warning("Frame extract produced empty file at t=%.2fs", timestamp)
+                return None
+            tmp.replace(output_path)
+        finally:
+            tmp.unlink(missing_ok=True)
         return output_path
 
     return await asyncio.to_thread(_extract)
@@ -1442,6 +1467,12 @@ async def extract_filmstrip(
             return None
 
         def _tile():
+            # Temp-then-replace, same reason as extract_frame_at: the strip
+            # is served immutable, so a half-written tile must never be
+            # observable at the final path.
+            import uuid
+            tmp = output_path.with_name(
+                f"{output_path.stem}.{uuid.uuid4().hex[:8]}.tmp{output_path.suffix}")
             cmd = [
                 "ffmpeg", "-y",
                 "-f", "image2",
@@ -1453,18 +1484,21 @@ async def extract_filmstrip(
                 "-vf", f"scale=-2:{tile_height},tile={count}x1",
                 "-frames:v", "1",
                 "-q:v", "5",
-                str(output_path),
+                str(tmp),
             ]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if r.returncode != 0:
-                logger.warning("filmstrip tile failed for %s: %s",
-                               video_path.name, r.stderr[-300:])
-                return None
-            if not output_path.exists() or output_path.stat().st_size == 0:
-                logger.warning("filmstrip tile produced an empty file for %s",
-                               video_path.name)
-                output_path.unlink(missing_ok=True)
-                return None
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                if r.returncode != 0:
+                    logger.warning("filmstrip tile failed for %s: %s",
+                                   video_path.name, r.stderr[-300:])
+                    return None
+                if not tmp.exists() or tmp.stat().st_size == 0:
+                    logger.warning("filmstrip tile produced an empty file for %s",
+                                   video_path.name)
+                    return None
+                tmp.replace(output_path)
+            finally:
+                tmp.unlink(missing_ok=True)
             return output_path
 
         return await asyncio.to_thread(_tile)
