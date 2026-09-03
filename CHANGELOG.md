@@ -86,6 +86,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   grey block.
 
 ### Fixed
+- **Cancelling an AI clip search now actually stops it.** Ask AI on the
+  cutting bench runs Whisper and then the model; nothing interrupted that work
+  when you pressed cancel, so it carried on, made the model call anyway, and
+  then wrote "success" over your "cancelled" — and the bench adopted proposals
+  you had cancelled. The search now checks for a cancel after the transcript
+  and again before adopting the result, and a cancelled search ends quietly
+  instead of as a failure.
+- **A refused AI call no longer turns into random clips.** When the model
+  could not be called at all — a bad or missing API key, a revoked model, a
+  rate limit — the picker used to treat that like "the AI found nothing" and
+  fall back to slicing the video into evenly spaced windows, which then
+  showed up labelled as viral picks with no word about why. Those refusals
+  now fail the job with the real reason; the fallback is only for a genuine
+  no-result.
+- **Dragging a cut across a pending one no longer stacks a second cut on top
+  of it.** The N key, paste and AI adoption already refused overlaps;
+  drag-create was the one door left open, and manual cutting cuts ranges
+  verbatim, so a drag that swept over an existing block produced two
+  near-identical clips. The drag now clamps into the free gap, the preview
+  while you drag shows exactly what will land, and a drag with less than a
+  second of room says so instead of silently doing nothing.
+- **Clips are drawn at their real shape.** The clip card's thumbnail was a
+  fixed portrait frame, and the inspector's shape chip said "9:16" whatever
+  the clip was; a clip cut from a square or portrait source (which keeps its
+  own shape) was centre-cropped to a sliver. Both now follow the shape probed
+  from the finished file, and a probe that fails under load re-probes the
+  file instead of guessing portrait.
+- **The inspector's Transcript section can render.** The clip list omits the
+  transcript text to keep the page light, and the inspector never fetched it,
+  so the section existed but never appeared. It now loads once per selected
+  clip.
+- **Regenerating a thumbnail shows the new image.** The regenerated file had
+  the same URL as the old one, so the browser kept showing what it had. The
+  URL now carries a version.
+- **Ask AI survives leaving the bench.** Peeking at a finished clip while a
+  search ran silently orphaned it — the proposals were never adopted. The
+  running search is remembered per source and re-attached when you come back,
+  and a finished search refreshes the source so the next cut does not re-run
+  the Whisper pass the search just did.
+- **Long podcasts snap all the way through.** The bench's speech lane asked
+  for the default 1,500 segments, so snapping stopped working past that point
+  on a long source. It now asks for the full transcript.
+- **Cut submits no longer fail on a stale range.** Ranges restored from a
+  previous visit are clamped to the source's current length; before, one
+  block past the end rejected the entire cut.
+- **Ranges the model or a chapter list handed over with a NaN bound are
+  rejected up front** with a clear message, instead of reaching ffmpeg as
+  `-ss nan` and failing the whole job opaquely. The bench's frame preview
+  likewise rejects an infinite time instead of crashing.
+- **A page load with the storage drive unmounted no longer deletes your video
+  library.** The Library's self-heal removes rows whose file is gone; with the
+  whole storage volume absent every file looked gone, so one page load could
+  delete every row and its sibling files. The prune now stands down until
+  storage is back.
+- **Cached preview images can no longer be served half-written.** The bench's
+  filmstrip and frame previews, and every generated thumbnail, are now written
+  to a temporary file and moved into place, and an empty frame is refused, so
+  a concurrent request can never pin a truncated image. Two simultaneous
+  requests for the same filmstrip also build it once instead of twice.
+- **A video with no readable duration is no longer labelled portrait.** The
+  media probe read width, height and duration all-or-nothing, so a file
+  whose container carries no duration threw away its perfectly good
+  dimensions — and a 1920x1080 clip was then treated as 9:16 by the caption
+  layout and the Library tile. Each field is now read on its own.
+- **Dragging on the bench is smooth with a full clip rail.** Every mouse move
+  used to re-render the whole page, including every clip card; the derived
+  lists are now cached and the cards only re-render when their own clip
+  changes.
 - **The voice pickers offered voices that could not work.** Every voice you
   could choose for a translated dub was a name the dubbing engine has never
   had, so full dub failed whichever one you picked. The Voice-over tool
