@@ -368,7 +368,7 @@ ViralMint is licensed under the **GNU Affero General Public License v3.0** ([LIC
 
 ### 🙋 Don't want to self-host?
 
-There's also a hosted build at **[viralmint.net](https://viralmint.net)** — the same scout + analyze + generate engine, signed and notarized, with no API keys to wire up (prepaid credits instead of BYOK). It's closed-source — a different set of trade-offs for people who'd rather not run their own keys and installs. Full comparison + FAQ: **[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**. Otherwise, everything you need is right here — read on and `python run.py`.
+There's also a hosted build at **[viralmint.net](https://viralmint.net)** — the same scout + analyze + generate engine, signed and notarized, with no API keys to wire up (prepaid credits instead of BYOK). It's closed-source — a different set of trade-offs for people who'd rather not run their own keys and installs. Full comparison + FAQ: **[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**. The hosted tools most people arrive through: the [AI video clipper for YouTube](https://viralmint.net/youtube-clip-extractor/), the [YouTube video downloader](https://viralmint.net/tools/video-downloader/youtube/), the [AI caption generator](https://viralmint.net/tools/ai-caption-generator/) and the [AI video generator](https://viralmint.net/tools/ai-video-generator/). Otherwise, everything you need is right here — read on and `python run.py`.
 
 ---
 

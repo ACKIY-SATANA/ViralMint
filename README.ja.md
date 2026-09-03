@@ -365,7 +365,7 @@ ViralMint は **GNU Affero General Public License v3.0**（[LICENSE](LICENSE)）
 
 ### 🙋 セルフホストしたくない？
 
-**[viralmint.net](https://viralmint.net)** にホスト版のビルドもあります — 発掘・分析・生成のエンジンは同じで、署名・公証済み、設定する API キーもありません（BYOK の代わりにプリペイドクレジット）。クローズドソースで — 自分でキーやインストールを管理したくない人向けの、異なるトレードオフです。詳しい比較と FAQ: **[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**。それ以外は、必要なものはすべてここにあります — 読み進めて `python run.py` を実行してください。
+**[viralmint.net](https://viralmint.net)** にホスト版のビルドもあります — 発掘・分析・生成のエンジンは同じで、署名・公証済み、設定する API キーもありません（BYOK の代わりにプリペイドクレジット）。クローズドソースで — 自分でキーやインストールを管理したくない人向けの、異なるトレードオフです。詳しい比較と FAQ: **[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**。ホスト版でよく使われる入口: [YouTube AI クリップ抽出](https://viralmint.net/youtube-clip-extractor/)、[YouTube 動画ダウンローダー](https://viralmint.net/tools/video-downloader/youtube/)、[AI 字幕ジェネレーター](https://viralmint.net/tools/ai-caption-generator/)、[AI 動画ジェネレーター](https://viralmint.net/tools/ai-video-generator/)。それ以外は、必要なものはすべてここにあります — 読み進めて `python run.py` を実行してください。
 
 ---
 

@@ -365,7 +365,7 @@ ViralMint 采用 **GNU Affero 通用公共许可证 v3.0（AGPL-3.0）** 授权�
 
 ### 🙋 不想自托管？
 
-在 **[viralmint.net](https://viralmint.net)** 也有一个托管版本——同一套「发现 + 分析 + 生成」引擎，已签名并公证，无需接入任何 API 密钥（用预付额度替代 BYOK）。它是闭源的——对于宁愿不折腾自己密钥与安装的人，这是另一套取舍。完整对比 + FAQ：**[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**。否则，你需要的一切都在这里——继续往下读，然后 `python run.py`。
+在 **[viralmint.net](https://viralmint.net)** 也有一个托管版本——同一套「发现 + 分析 + 生成」引擎，已签名并公证，无需接入任何 API 密钥（用预付额度替代 BYOK）。它是闭源的——对于宁愿不折腾自己密钥与安装的人，这是另一套取舍。完整对比 + FAQ：**[docs/hosted-vs-self-hosted.md](docs/hosted-vs-self-hosted.md)**。托管版最常用的入口：[YouTube AI 切片工具](https://viralmint.net/youtube-clip-extractor/)、[YouTube 视频下载器](https://viralmint.net/tools/video-downloader/youtube/)、[AI 字幕生成器](https://viralmint.net/tools/ai-caption-generator/) 和 [AI 视频生成器](https://viralmint.net/tools/ai-video-generator/)。否则，你需要的一切都在这里——继续往下读，然后 `python run.py`。
 
 ---
 
