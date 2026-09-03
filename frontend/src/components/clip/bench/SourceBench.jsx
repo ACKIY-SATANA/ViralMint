@@ -22,6 +22,7 @@ import { parseRangeText } from "./parseRanges"
 import { formatTime } from "../clipFormat"
 import { CAPTION_STYLES } from "../../tools/captionOptions"
 import http from "../../../api/http"
+import { storageKey } from "../../../utils/storage"
 import useAppStore from "../../../store/appStore"
 
 /* ── The cutting bench ─────────────────────────────────────────
@@ -146,7 +147,20 @@ export default function SourceBench({
   // State, not a ref: the job id is a subscription key for the selectors
   // below, and a ref read inside a zustand selector only re-evaluates when
   // something else happens to touch the store.
-  const [suggestJobId, setSuggestJobId] = useState(null)
+  // Restored from sessionStorage per source: SourceBench unmounts whenever
+  // the user peeks at a finished clip (centerMode flips) — without this, a
+  // running Ask AI was silently orphaned and its proposals never adopted. On
+  // remount the collector below re-attaches to the job row.
+  const suggestKey = storageKey("clipper", `suggest:${source?.id}`)
+  const [suggestJobId, setSuggestJobId] = useState(() => {
+    try { return sessionStorage.getItem(suggestKey) || null } catch { return null }
+  })
+  useEffect(() => {
+    try {
+      if (suggestJobId) sessionStorage.setItem(suggestKey, suggestJobId)
+      else sessionStorage.removeItem(suggestKey)
+    } catch { /* private mode — degradation is the pre-fix behaviour */ }
+  }, [suggestJobId, suggestKey])
   const suggesting = suggestJobId != null
 
   // The timeupdate guard runs on the media element and must see the CURRENT
@@ -165,7 +179,9 @@ export default function SourceBench({
     setPlaying(false)
     if (!sourceId) return
     let cancelled = false
-    http.get(`/api/downloaded/${sourceId}/segments`)
+    // limit=5000 (the endpoint's ceiling): the default 1500 stopped snapping
+    // past segment 1500 on long podcasts.
+    http.get(`/api/downloaded/${sourceId}/segments?limit=5000`)
       .then(({ data }) => { if (!cancelled) setSegments(data?.segments || []) })
       // A source with no transcript is ordinary — the timeline just loses
       // its speech lane and its snapping. Never surface this as an error.
@@ -721,7 +737,12 @@ export default function SourceBench({
           onRangeCommit={R.settle}
           onRangeAdd={(a, b) => {
             if (atCap) { showSnackbar(`The bench holds ${MAX_RANGES} ranges — cut or remove some first`, "warning"); return }
-            R.add(a, b)
+            if (R.add(a, b) == null) {
+              // add() refused: the span was clamped away by a pending cut,
+              // or is shorter than the 1s floor. Say so — a drag that lands
+              // nothing with no word reads as a broken timeline.
+              showSnackbar("No room there — that stretch is under a pending cut or shorter than 1s", "info")
+            }
           }}
           onRangeRemove={R.remove}
           onStrip={setStrip}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react"
 import {
   Box, Typography, Paper, Stack, Chip, IconButton, Button, Divider,
   TextField, Tooltip, CircularProgress, Menu, MenuItem,
@@ -38,7 +38,7 @@ import SourceBench from "../components/clip/bench/SourceBench"
 import useClipSettings from "../components/clip/useClipSettings"
 import useBenchRanges, { MIN_LEN_SEC } from "../components/clip/bench/useBenchRanges"
 import {
-  formatTime, hookTypeLabel, viralityColor, viralityLabel,
+  formatTime, hookTypeLabel, viralityColor, viralityLabel, clipAspectCss,
 } from "../components/clip/clipFormat"
 
 // clip_score_breakdown_json arrives as a JSON string ({flow, value, trend,
@@ -232,12 +232,12 @@ function SourceVideoCard({ video, clipCount, isSelected, onClick, onPreview }) {
 
 /* ── Clip Filmstrip Card ───────────────────────────────────── */
 
-function ClipCard({ clip, isSelected, onClick }) {
+function ClipCardImpl({ clip, isSelected, onSelect }) {
   const score = clip.clip_virality_score
   return (
     <Paper
       elevation={0}
-      onClick={onClick}
+      onClick={() => onSelect(clip)}
       sx={{
         width: 140, minWidth: 140, flexShrink: 0,
         cursor: "pointer",
@@ -256,9 +256,14 @@ function ClipCard({ clip, isSelected, onClick }) {
       }}
     >
       {/* Thumbnail */}
-      <Box sx={{ width: "100%", aspectRatio: "9/16", position: "relative", bgcolor: "#000" }}>
+      {/* The frame follows the clip's probed aspect — extraction only reframes
+          when "vertical" is on, so a 16:9 cut is a real 16:9 file and a
+          hardcoded 9:16 centre-cropped it to a sliver. ?v= is the cache-bust
+          signal: without a new value a regenerated thumbnail never appears
+          (same URL, so the browser keeps the bytes it has). */}
+      <Box sx={{ width: "100%", aspectRatio: clipAspectCss(clip.aspect_ratio), position: "relative", bgcolor: "#000" }}>
         {clip.thumbnail_path ? (
-          <Box component="img" src={`/api/videos/${clip.id}/thumbnail`} alt=""
+          <Box component="img" src={`/api/videos/${clip.id}/thumbnail?v=${encodeURIComponent(clip.thumb_v || clip.created_at || "1")}`} alt=""
             sx={{ width: "100%", height: "100%", objectFit: "cover" }} />
         ) : (
           <Box sx={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -322,6 +327,13 @@ function ClipCard({ clip, isSelected, onClick }) {
    MAIN COMPONENT: Clip Studio
    ══════════════════════════════════════════════════════════════ */
 
+// Memoized: the page re-renders per pointermove while a bench handle drags,
+// and a filmstrip of these re-rendering per mouse event is the difference
+// between a smooth drag and a stutter. Props are primitives plus a stable
+// setter — a fresh `onClick` arrow per render would defeat the memo, which
+// is why the card takes `onSelect(clip)` instead.
+const ClipCard = memo(ClipCardImpl)
+
 export default function ClipStudio() {
   const showSnackbar = useAppStore((s) => s.showSnackbar)
   const activeJobs = useAppStore((s) => s.activeJobs)
@@ -341,6 +353,9 @@ export default function ClipStudio() {
   // Data
   const [sources, setSources] = useState([])
   const [clips, setClips] = useState([])
+  // The list endpoint pages; `total` says how many exist so the header
+  // doesn't silently undercount a heavy user's library.
+  const [clipTotal, setClipTotal] = useState(null)
   const [loading, setLoading] = useState(true)
   const [selectedSourceId, setSelectedSourceId] = useState(null) // "all" or video id
   const [selectedClip, setSelectedClip] = useState(null)
@@ -381,10 +396,12 @@ export default function ClipStudio() {
   // Video player ref
   const videoRef = useRef(null)
 
-  // Pause the center clip player whenever the source-video preview opens, so
-  // two videos aren't playing — and both audible — at the same time.
+  // Pause every player on the page whenever the source-video preview opens,
+  // so two videos aren't playing — and both audible — at the same time. The
+  // bench player lives inside SourceBench, so a ref to the inspector alone
+  // missed it and the bench kept talking under the preview.
   useEffect(() => {
-    if (previewVideo) videoRef.current?.pause()
+    if (previewVideo) document.querySelectorAll("video").forEach(v => { try { v.pause() } catch { /* detached */ } })
   }, [previewVideo])
 
   // ── Load data ────────────────────────────────────────────────
@@ -405,6 +422,7 @@ export default function ClipStudio() {
       // Only show clip_extraction videos
       const clipVideos = (clipRes.data.videos || []).filter(v => v.source_type === "clip_extraction")
       setClips(clipVideos)
+      setClipTotal(typeof clipRes.data.total === "number" ? clipRes.data.total : null)
 
       // Don't auto-select — let user choose from filmstrip or sidebar
     } catch (e) {
@@ -417,9 +435,17 @@ export default function ClipStudio() {
 
   useEffect(() => { fetchData() }, [fetchData])
 
-  // Auto-refresh when a clip extraction job completes
+  // Auto-refresh when a clip extraction OR suggestion job completes. The
+  // suggestion half matters for a non-obvious reason: Ask AI may run Whisper
+  // and back-fill the source row's transcript, and useClipSettings derives
+  // force_retranscribe from has_transcript_segments — left stale, the next
+  // Cut re-ran the whole Whisper pass Ask AI had just spent minutes on.
+  const refreshJobs = useMemo(
+    () => Object.values(activeJobs).filter(
+      j => isClipJob(j) || j.inputData?.type === "clip_suggestion"),
+    [activeJobs])  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    for (const job of clipJobs) {
+    for (const job of refreshJobs) {
       if ((job.status === "success" || job.status === "failed") && !justCompletedRef.current.has(job.jobId)) {
         justCompletedRef.current.add(job.jobId)
         // Prevent unbounded growth — keep only the last 50 entries
@@ -433,14 +459,20 @@ export default function ClipStudio() {
         }
       }
     }
-  }, [clipJobs, fetchData])
+  }, [refreshJobs, fetchData])
 
   // ── Derived data ─────────────────────────────────────────────
-  const clipCountBySource = {}
-  clips.forEach(c => {
-    const sid = c.source_downloaded_video_id
-    if (sid) clipCountBySource[sid] = (clipCountBySource[sid] || 0) + 1
-  })
+  // Memoized: dragging a bench handle updates range state owned by this page,
+  // so every pointermove re-renders ClipStudio — these must not rebuild (and
+  // the filmstrip must not re-sort) per mouse event.
+  const clipCountBySource = useMemo(() => {
+    const counts = {}
+    clips.forEach(c => {
+      const sid = c.source_downloaded_video_id
+      if (sid) counts[sid] = (counts[sid] || 0) + 1
+    })
+    return counts
+  }, [clips])
 
   // The source the bench works on. "all" is a review filter, not a video, so
   // it has no bench.
@@ -467,7 +499,7 @@ export default function ClipStudio() {
 
   // Only show clips when a source is selected (or "all" explicitly chosen)
   const showAllClips = selectedSourceId === "all"
-  const filteredClips = clips
+  const filteredClips = useMemo(() => clips
     .filter(c => {
       if (!selectedSourceId && !showAllClips) return false  // nothing selected → show nothing
       if (selectedSourceId && selectedSourceId !== "all") {
@@ -485,7 +517,7 @@ export default function ClipStudio() {
       if (sortBy === "newest") return new Date(b.created_at || 0) - new Date(a.created_at || 0)
       if (sortBy === "duration") return (b.duration_seconds || 0) - (a.duration_seconds || 0)
       return 0
-    })
+    }), [clips, selectedSourceId, showAllClips, searchQuery, sortBy])
 
   // ── Handlers ─────────────────────────────────────────────────
 
@@ -572,14 +604,36 @@ export default function ClipStudio() {
     }
   }
 
+  // The list row carries no `script` (payload weight), so the inspector's
+  // Transcript section rendered for no clip, ever. Fetch the detail row once
+  // per selected clip and merge; the guard set stops a null script refetching.
+  const scriptFetchedRef = useRef(new Set())
+  useEffect(() => {
+    const id = selectedClip?.id
+    if (!id || selectedClip.script !== undefined || scriptFetchedRef.current.has(id)) return
+    scriptFetchedRef.current.add(id)
+    let alive = true
+    http.get(`/api/videos/${id}`).then(({ data }) => {
+      if (!alive || !data) return
+      const patch = { script: data.script ?? null }
+      setSelectedClip(prev => (prev?.id === id ? { ...prev, ...patch } : prev))
+      setClips(prev => prev.map(c => (c.id === id ? { ...c, ...patch } : c)))
+    }).catch(() => { /* detail fetch is best-effort; the section just stays hidden */ })
+    return () => { alive = false }
+  }, [selectedClip])
+
   const handleRegenThumbnail = async () => {
     if (!selectedClip) return
     setRegenThumb(true)
     try {
       const res = await http.post(`/api/videos/${selectedClip.id}/regenerate-thumbnail`)
       showSnackbar("Thumbnail regenerated!", "success")
-      setSelectedClip(prev => ({ ...prev, thumbnail_path: res.data.thumbnail_path }))
-      setClips(prev => prev.map(c => c.id === selectedClip.id ? { ...c, thumbnail_path: res.data.thumbnail_path } : c))
+      // thumb_v busts the thumbnail URL — without a new value the regenerated
+      // image never appears: same URL, so React doesn't reload the <img> and
+      // the browser serves the bytes it already has.
+      const thumbV = Date.now()
+      setSelectedClip(prev => ({ ...prev, thumbnail_path: res.data.thumbnail_path, thumb_v: thumbV }))
+      setClips(prev => prev.map(c => c.id === selectedClip.id ? { ...c, thumbnail_path: res.data.thumbnail_path, thumb_v: thumbV } : c))
     } catch (e) {
       showSnackbar(`Thumbnail regen failed: ${e.response?.data?.detail || e.message}`, "error")
     } finally {
@@ -648,7 +702,7 @@ export default function ClipStudio() {
               Clip Studio
             </Typography>
             <Typography variant="caption" sx={{ color: "text.secondary" }}>
-              {clips.length} clip{clips.length !== 1 ? "s" : ""} from {sources.length} video{sources.length !== 1 ? "s" : ""}
+              {clipTotal ?? clips.length} clip{(clipTotal ?? clips.length) !== 1 ? "s" : ""} from {sources.length} video{sources.length !== 1 ? "s" : ""}{clipTotal > clips.length ? ` · showing latest ${clips.length}` : ""}
             </Typography>
           </Box>
         </Stack>
@@ -937,7 +991,7 @@ export default function ClipStudio() {
                       />
                     )}
                     <Chip label={`${formatTime(selectedClip.duration_seconds)}`} icon={<AccessTimeIcon />} size="small" variant="outlined" />
-                    <Chip label="9:16" size="small" variant="outlined" />
+                    <Chip label={selectedClip.aspect_ratio || "9:16"} size="small" variant="outlined" />
                     {selectedClip.caption_status === "applied" && (
                       <Chip icon={<CheckCircleIcon />} label="Captions" size="small" color="success" variant="outlined" />
                     )}
@@ -1124,7 +1178,9 @@ export default function ClipStudio() {
                   different act from the one in the corner. */}
             </Stack>
             <Box sx={{
-              display: "flex", flexWrap: "nowrap", gap: 1.5, px: 2, pb: 2, pt: 0.5,
+              // flex-start: with mixed aspects, a landscape card must not
+              // stretch to portrait height with dead space under it.
+              display: "flex", flexWrap: "nowrap", alignItems: "flex-start", gap: 1.5, px: 2, pb: 2, pt: 0.5,
               overflowX: "auto", overflowY: "hidden",
               "&::-webkit-scrollbar": { height: 6 },
               "&::-webkit-scrollbar-thumb": { bgcolor: "divider", borderRadius: 3 },
@@ -1141,7 +1197,7 @@ export default function ClipStudio() {
                     key={clip.id}
                     clip={clip}
                     isSelected={selectedClip?.id === clip.id}
-                    onClick={() => setSelectedClip(clip)}
+                    onSelect={setSelectedClip}
                   />
                 ))
               )}

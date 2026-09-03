@@ -55,3 +55,19 @@ export function hookTypeLabel(t) {
   if (!t || t === "general") return null
   return HOOK_TYPE_LABEL[t] || null
 }
+
+/**
+ * CSS `aspect-ratio` for a clip's persisted `aspect_ratio` ("16:9" / "9:16" /
+ * "1:1" — the vocabulary of backend video_utils.aspect_from_dims). Portrait
+ * when the row carries nothing (legacy rows), since that is what extraction
+ * produces by default.
+ *
+ * The clip card used to hardcode 9:16; a landscape cut (extraction only
+ * reframes when "vertical" is on) then had its thumbnail centre-cropped to a
+ * vertical sliver.
+ */
+export function clipAspectCss(aspect) {
+  const [w, h] = String(aspect || "").split(":").map(Number)
+  if (!(w > 0) || !(h > 0)) return "9 / 16"
+  return `${w} / ${h}`
+}

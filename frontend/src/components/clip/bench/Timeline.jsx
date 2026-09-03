@@ -226,7 +226,18 @@ export default function Timeline({
       if (Math.abs(e.clientX - drag.originX) < DRAG_THRESHOLD_PX) return
       const a = snap(drag.originT, noSnap)
       const b = snap(raw, noSnap)
-      setDraft({ start: Math.min(a, b), end: Math.max(a, b) })
+      let lo = Math.min(a, b)
+      let hi = Math.max(a, b)
+      // Clamp the draft against existing blocks so the preview shows what
+      // add() will actually accept (it refuses overlaps — see the note
+      // there). Without this the draft sweeps across a pending block and
+      // then visibly shrinks on release, which reads as a glitch.
+      for (const r of ranges) {
+        if (lo >= r.start && lo < r.end) lo = r.end
+        if (hi > r.start && lo <= r.start) hi = r.start
+      }
+      if (hi <= lo) return   // keep the last valid draft
+      setDraft({ start: lo, end: hi })
       return
     }
     if (drag.kind === "move") {

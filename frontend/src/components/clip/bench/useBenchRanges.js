@@ -69,6 +69,14 @@ export default function useBenchRanges(sourceId, duration) {
       if (Array.isArray(parsed)) {
         restored = parsed
           .filter((r) => r && Number.isFinite(r.start) && Number.isFinite(r.end) && r.end > r.start)
+          // A source re-fetched shorter under the same row id restores blocks
+          // past the end, and the backend 400s the ENTIRE Cut submit for one
+          // stale range. Clamp like add() does (duration is the mount-time
+          // row value — deliberately not a dep, a re-restore would clobber
+          // live edits).
+          .filter((r) => !(duration > 0) || r.start < duration)
+          .map((r) => ({ ...r, end: duration > 0 ? Math.min(r.end, duration) : r.end }))
+          .filter((r) => r.end - r.start >= MIN_LEN_SEC)
           .slice(0, MAX_RANGES)
           .map((r) => ({ id: nextId(), start: r.start, end: r.end, meta: r.meta || null }))
       }
@@ -113,8 +121,21 @@ export default function useBenchRanges(sourceId, duration) {
     // anonymous blue block — the user should always be able to see which
     // cuts were their own idea.
     if (ranges.length >= MAX_RANGES) return null
-    const lo = clamp(Math.min(start, end), 0, duration)
-    const hi = clamp(Math.max(start, end), 0, duration)
+    let lo = clamp(Math.min(start, end), 0, duration)
+    let hi = clamp(Math.max(start, end), 0, duration)
+    // Clamp into the free gap around `lo`, for the reason `addAt`/`addMany`
+    // spell out: manual mode cuts VERBATIM, so a drag that crossed an
+    // existing block would stack a second cut over the same seconds — two
+    // near-identical clips from one Cut. The N key, paste and AI adoption
+    // all refused overlaps; drag-create was the one door left open (a drag
+    // across a pending block landed 4:13→7:01 on top of 5:37→8:25).
+    // Timeline clamps the DRAFT the same way, so what the user sees
+    // mid-drag is what lands.
+    const sorted = [...ranges].sort((a, b) => a.start - b.start)
+    const covering = sorted.find((r) => lo >= r.start && lo < r.end)
+    if (covering) lo = covering.end
+    const nextBlock = sorted.find((r) => r.start >= lo && r.end > lo)
+    if (nextBlock) hi = Math.min(hi, nextBlock.start)
     if (hi - lo < MIN_LEN_SEC) return null
 
     const created = { id: nextId(), start: round3(lo), end: round3(hi), meta }
